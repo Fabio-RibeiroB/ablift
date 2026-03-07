@@ -2,6 +2,8 @@
 
 `bayestest` is an agent-friendly Python package and CLI for A/B/n decisions.
 
+> Early release (alpha): this project is work in progress and not production-hardened yet.
+
 It supports:
 - Bayesian conversion-rate decisions (Beta-Binomial)
 - Bayesian ARPU probability-to-win from aggregate revenue stats
