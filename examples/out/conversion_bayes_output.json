@@ -1,0 +1,74 @@
+{
+  "experiment_name": "homepage_cta",
+  "method": "bayesian",
+  "control_variant": "control",
+  "comparisons": [
+    {
+      "treatment": "v1",
+      "control": "control",
+      "metric": "conversion_rate",
+      "control_rate": 0.04,
+      "treatment_rate": 0.0416,
+      "absolute_lift": 0.0015999999999999973,
+      "relative_lift": 0.03999999999999993,
+      "p_value": null,
+      "alpha_spent": null,
+      "significant": null,
+      "probability_beats_control": 0.8972333333333333,
+      "expected_loss": 6.050656160219943e-05,
+      "ci_low": -0.020737392677785956,
+      "ci_high": 0.10536358733782704
+    },
+    {
+      "treatment": "v2",
+      "control": "control",
+      "metric": "conversion_rate",
+      "control_rate": 0.04,
+      "treatment_rate": 0.0428,
+      "absolute_lift": 0.002799999999999997,
+      "relative_lift": 0.06999999999999992,
+      "p_value": null,
+      "alpha_spent": null,
+      "significant": null,
+      "probability_beats_control": 0.9882,
+      "expected_loss": 4.985235224421962e-06,
+      "ci_low": 0.008739990700679753,
+      "ci_high": 0.1354801724115647
+    }
+  ],
+  "guardrails_passed": true,
+  "guardrails": [
+    {
+      "name": "p95_latency_ms",
+      "direction": "decrease",
+      "control": 420,
+      "treatment": 430,
+      "relative_change": 0.023809523809523808,
+      "max_relative_change": 0.05,
+      "passed": true,
+      "reason": "Within allowed increase"
+    }
+  ],
+  "srm": {
+    "passed": true,
+    "p_value": 0.9961661992687714,
+    "observed": [
+      50000,
+      50000,
+      50000
+    ],
+    "expected": [
+      50000.0,
+      50000.0,
+      50000.0
+    ],
+    "reason": "No strong SRM evidence."
+  },
+  "recommendation": {
+    "action": "ship_v2",
+    "rationale": "v2 passes Bayesian thresholds (P(win)=0.988, expected_loss=0.000005).",
+    "decision_confidence": 0.9882,
+    "next_best_action": "Roll out gradually and monitor guardrails.",
+    "risk_flags": []
+  }
+}

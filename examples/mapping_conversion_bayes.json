@@ -1,0 +1,29 @@
+{
+  "experiment_name": "homepage_cta",
+  "method": "bayesian",
+  "primary_metric": "conversion_rate",
+  "alpha": 0.05,
+  "look_index": 1,
+  "max_looks": 1,
+  "columns": {
+    "variant": "variant_name",
+    "visitors": "users",
+    "conversions": "orders",
+    "is_control": "is_control"
+  },
+  "guardrails": [
+    {
+      "name": "p95_latency_ms",
+      "control": 420,
+      "treatment": 430,
+      "direction": "decrease",
+      "max_relative_change": 0.05
+    }
+  ],
+  "decision_thresholds": {
+    "bayes_prob_beats_control": 0.95,
+    "max_expected_loss": 0.001
+  },
+  "samples": 30000,
+  "random_seed": 7
+}

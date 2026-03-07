@@ -1,0 +1,4 @@
+variant_name,users,orders,revenue_sum,revenue_sum_squares,is_control
+control,10000,550,22000,150000,true
+v1,10000,570,23500,170000,false
+v2,10000,565,23100,166000,false

@@ -1,0 +1,2 @@
+method,baseline_rate,relative_mde,daily_traffic,n_variants,alpha,power,max_looks,prob_threshold,max_expected_loss,assurance_target,max_days
+frequentist,0.04,0.05,50000,3,0.05,0.8,10,0.95,0.001,0.8,60

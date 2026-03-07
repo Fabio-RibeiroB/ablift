@@ -1,0 +1,4 @@
+variant_name,users,orders,is_control,p95_latency_control,p95_latency_treatment
+control,50000,2000,true,420,420
+v1,50000,2080,false,420,428
+v2,50000,2140,false,420,430

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bayestest"
+version = "0.3.0"
+description = "CLI and Python toolkit for Bayesian and sequential A/B/n decisions"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  {name = "Fabio-RibeiroB", email = "bradyfr@proton.me"}
+]
+dependencies = [
+  "numpy>=1.22",
+  "openpyxl>=3.1.0",
+]
+
+[project.scripts]
+bayestest = "bayestest.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bayestest*"]
