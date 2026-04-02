@@ -8,5 +8,6 @@ dist/
 build/
 .pytest_cache/
 .codex
+/input.json
 /output.json
 /report.md
