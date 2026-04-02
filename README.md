@@ -23,16 +23,13 @@ uv sync --group test
 
 Run commands through `uv` so the managed environment is always used.
 
-## Requirements Checklist
+## CLI Usage
 
-- Python `>=3.9`
-- Dependencies: `numpy>=1.22`, `openpyxl>=3.1.0`
-- Test dependencies available via `uv sync --group test`
 - CLI available via `uv run bayestest --help`
 - Exactly one control variant in analysis inputs
 - Required variant fields: `name`, `visitors`, `conversions`
 - ARPU mode also requires: `revenue_sum`, `revenue_sum_squares`
-- CSV/XLSX mode requires mapping JSON (`example-mapping` or `example-duration-mapping`)
+- CSV/XLSX mode requires mapping JSON (see `examples/` for samples)
 
 ## CLI quickstart
 
@@ -55,8 +52,8 @@ Analyze directly from CSV/XLSX:
 
 ```bash
 uv run bayestest analyze-file \
-  --input experiment.xlsx \
-  --mapping mapping.json \
+  --input examples/arpu_bayesian.xlsx \
+  --mapping examples/mapping_arpu_bayes.json \
   --sheet Sheet1 \
   --output output.json \
   --report report.md
@@ -111,10 +108,9 @@ uv run bayestest analyze-text \
 Estimate duration from CSV/XLSX:
 
 ```bash
-uv run bayestest example-duration-mapping > duration_mapping.json
 uv run bayestest duration \
-  --input duration_inputs.xlsx \
-  --mapping duration_mapping.json \
+  --input examples/duration_inputs.xlsx \
+  --mapping examples/duration_mapping.json \
   --sheet Sheet1
 ```
 
@@ -177,6 +173,11 @@ Generate mapping template:
 ```bash
 uv run bayestest example-mapping > mapping.json
 ```
+
+Or use existing examples in `examples/`:
+- `mapping_arpu_bayes.json` - for ARPU analysis
+- `mapping_conversion_bayes.json` - for conversion rate analysis
+- `duration_mapping.json` - for duration estimation
 
 Mapping keys:
 - `columns.variant`, `columns.visitors`, `columns.conversions`

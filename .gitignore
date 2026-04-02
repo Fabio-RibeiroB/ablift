@@ -7,3 +7,6 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.codex
+/output.json
+/report.md
