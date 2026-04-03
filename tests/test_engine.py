@@ -136,7 +136,12 @@ class EngineTests(unittest.TestCase):
             "variants": [
                 {"name": "control", "visitors": 20000, "conversions": 900, "is_control": True},
                 {"name": "treatment_a", "visitors": 20000, "conversions": 940, "is_control": False},
-                {"name": "treatment_b", "visitors": 20000, "conversions": 1010, "is_control": False},
+                {
+                    "name": "treatment_b",
+                    "visitors": 20000,
+                    "conversions": 1010,
+                    "is_control": False,
+                },
             ],
             "samples": 15000,
             "random_seed": 9,
@@ -174,9 +179,7 @@ class EngineTests(unittest.TestCase):
 
         p1 = x1 / n1
         p2 = x2 / n2
-        expected_unpooled_se = math.sqrt(
-            (p1 * (1 - p1) / n1) + (p2 * (1 - p2) / n2)
-        )
+        expected_unpooled_se = math.sqrt((p1 * (1 - p1) / n1) + (p2 * (1 - p2) / n2))
 
         self.assertAlmostEqual(z_value, expected_z, places=10)
         self.assertAlmostEqual(p_value, expected_p_value, places=10)

@@ -74,16 +74,16 @@ def _guardrail_lines(guardrails: list[GuardrailResult]) -> list[str]:
 
 
 def build_markdown_report(result: AnalysisResult) -> str:
-    recommendation_action = result.recommendation.action if result.recommendation else "not_evaluated"
+    recommendation_action = (
+        result.recommendation.action if result.recommendation else "not_evaluated"
+    )
     recommendation_rationale = (
         result.recommendation.rationale
         if result.recommendation
         else "No decision policy was provided, so estimates are reported without an automated recommendation."
     )
     recommendation_confidence = (
-        _fmt_float(result.recommendation.decision_confidence, 4)
-        if result.recommendation
-        else "n/a"
+        _fmt_float(result.recommendation.decision_confidence, 4) if result.recommendation else "n/a"
     )
     recommendation_next = (
         result.recommendation.next_best_action

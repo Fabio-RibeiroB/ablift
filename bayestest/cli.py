@@ -10,7 +10,8 @@ from typing import Any
 import click
 
 from .connectors import build_duration_request_from_rows, build_payload_from_rows, read_table
-from .engine import analyze as run_analysis, parse_payload
+from .engine import analyze as run_analysis
+from .engine import parse_payload
 from .planning import bayesian_duration_conversion, frequentist_duration_conversion
 from .reporting import build_markdown_report
 from .text_parser import parse_duration_prompt, parse_variant_lines
@@ -260,23 +261,89 @@ def cli() -> None:
 
 
 @cli.command(epilog=ANALYZE_EPILOG)
-@click.option("--input", "input_path", required=True, type=click.Path(exists=True), help="Path to input .json, .csv, .xlsx, or .xlsm.")
-@click.option("--mapping", "mapping_path", required=False, type=click.Path(exists=True), help="Optional JSON mapping for CSV/XLSX column names.")
-@click.option("--sheet", required=False, default=None, help="Excel sheet name for .xlsx/.xlsm input.")
-@click.option("--experiment-name", required=False, default=None, help="Optional experiment name override for CSV/XLSX input.")
-@click.option("--method", type=click.Choice(["bayesian", "frequentist_sequential"]), default=None, help="Optional method override for CSV/XLSX input.")
-@click.option("--primary-metric", type=click.Choice(["conversion_rate", "arpu"]), default=None, help="Optional metric override for CSV/XLSX input.")
-@click.option("--enable-recommendation/--no-recommendation", default=None, help="Enable or disable automated recommendation output.")
-@click.option("--prob-threshold", type=float, default=None, help="Bayesian probability-to-win threshold for recommendations.")
-@click.option("--max-expected-loss", type=float, default=None, help="Bayesian expected-loss threshold for recommendations.")
+@click.option(
+    "--input",
+    "input_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to input .json, .csv, .xlsx, or .xlsm.",
+)
+@click.option(
+    "--mapping",
+    "mapping_path",
+    required=False,
+    type=click.Path(exists=True),
+    help="Optional JSON mapping for CSV/XLSX column names.",
+)
+@click.option(
+    "--sheet", required=False, default=None, help="Excel sheet name for .xlsx/.xlsm input."
+)
+@click.option(
+    "--experiment-name",
+    required=False,
+    default=None,
+    help="Optional experiment name override for CSV/XLSX input.",
+)
+@click.option(
+    "--method",
+    type=click.Choice(["bayesian", "frequentist_sequential"]),
+    default=None,
+    help="Optional method override for CSV/XLSX input.",
+)
+@click.option(
+    "--primary-metric",
+    type=click.Choice(["conversion_rate", "arpu"]),
+    default=None,
+    help="Optional metric override for CSV/XLSX input.",
+)
+@click.option(
+    "--enable-recommendation/--no-recommendation",
+    default=None,
+    help="Enable or disable automated recommendation output.",
+)
+@click.option(
+    "--prob-threshold",
+    type=float,
+    default=None,
+    help="Bayesian probability-to-win threshold for recommendations.",
+)
+@click.option(
+    "--max-expected-loss",
+    type=float,
+    default=None,
+    help="Bayesian expected-loss threshold for recommendations.",
+)
 @click.option("--alpha", type=float, default=None, help="Optional alpha override.")
-@click.option("--look-index", type=int, default=None, help="Optional sequential look index override.")
+@click.option(
+    "--look-index", type=int, default=None, help="Optional sequential look index override."
+)
 @click.option("--max-looks", type=int, default=None, help="Optional sequential max looks override.")
-@click.option("--information-fraction", type=float, default=None, help="Optional sequential information fraction override.")
-@click.option("--samples", type=int, default=None, help="Optional Bayesian posterior sample count override.")
-@click.option("--random-seed", type=int, default=None, help="Optional Bayesian random seed override.")
-@click.option("--output", "output_path", required=False, type=click.Path(), help="Path to output JSON. If omitted, writes to stdout.")
-@click.option("--report", "report_path", required=False, type=click.Path(), help="Optional path to markdown report output.")
+@click.option(
+    "--information-fraction",
+    type=float,
+    default=None,
+    help="Optional sequential information fraction override.",
+)
+@click.option(
+    "--samples", type=int, default=None, help="Optional Bayesian posterior sample count override."
+)
+@click.option(
+    "--random-seed", type=int, default=None, help="Optional Bayesian random seed override."
+)
+@click.option(
+    "--output",
+    "output_path",
+    required=False,
+    type=click.Path(),
+    help="Path to output JSON. If omitted, writes to stdout.",
+)
+@click.option(
+    "--report",
+    "report_path",
+    required=False,
+    type=click.Path(),
+    help="Optional path to markdown report output.",
+)
 def analyze(
     input_path: str,
     mapping_path: str | None,
@@ -298,7 +365,11 @@ def analyze(
 ) -> None:
     """Analyze JSON, CSV, or XLSX experiment input."""
     decision_policy = None
-    if enable_recommendation is not None or prob_threshold is not None or max_expected_loss is not None:
+    if (
+        enable_recommendation is not None
+        or prob_threshold is not None
+        or max_expected_loss is not None
+    ):
         decision_policy = {
             "enabled": True if enable_recommendation is None else enable_recommendation,
             "bayes_prob_beats_control": prob_threshold,
@@ -326,7 +397,9 @@ def analyze(
         )
     except (ValueError, json.JSONDecodeError) as exc:
         raise click.ClickException(str(exc)) from exc
-    if Path(input_path).suffix.lower() in {".csv", ".xlsx", ".xlsm"} and input_payload.get("experiment_name") in {None, "", "table_input_experiment"}:
+    if Path(input_path).suffix.lower() in {".csv", ".xlsx", ".xlsm"} and input_payload.get(
+        "experiment_name"
+    ) in {None, "", "table_input_experiment"}:
         input_payload["experiment_name"] = Path(input_path).stem
     try:
         _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
@@ -335,14 +408,46 @@ def analyze(
 
 
 @cli.command("analyze-file", hidden=True)
-@click.option("--input", "input_path", required=True, type=click.Path(exists=True), help="Path to CSV/XLSX.")
-@click.option("--mapping", "mapping_path", required=False, type=click.Path(exists=True), help="Optional JSON mapping for CSV/XLSX column names.")
+@click.option(
+    "--input", "input_path", required=True, type=click.Path(exists=True), help="Path to CSV/XLSX."
+)
+@click.option(
+    "--mapping",
+    "mapping_path",
+    required=False,
+    type=click.Path(exists=True),
+    help="Optional JSON mapping for CSV/XLSX column names.",
+)
 @click.option("--sheet", required=False, default=None, help="Excel sheet name.")
-@click.option("--experiment-name", required=False, default=None, help="Optional experiment name override.")
-@click.option("--method", type=click.Choice(["bayesian", "frequentist_sequential"]), default=None, help="Optional method override.")
-@click.option("--primary-metric", type=click.Choice(["conversion_rate", "arpu"]), default=None, help="Optional metric override.")
-@click.option("--output", "output_path", required=False, type=click.Path(), help="Path to output JSON. If omitted, writes to stdout.")
-@click.option("--report", "report_path", required=False, type=click.Path(), help="Optional path to markdown report output.")
+@click.option(
+    "--experiment-name", required=False, default=None, help="Optional experiment name override."
+)
+@click.option(
+    "--method",
+    type=click.Choice(["bayesian", "frequentist_sequential"]),
+    default=None,
+    help="Optional method override.",
+)
+@click.option(
+    "--primary-metric",
+    type=click.Choice(["conversion_rate", "arpu"]),
+    default=None,
+    help="Optional metric override.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    required=False,
+    type=click.Path(),
+    help="Path to output JSON. If omitted, writes to stdout.",
+)
+@click.option(
+    "--report",
+    "report_path",
+    required=False,
+    type=click.Path(),
+    help="Optional path to markdown report output.",
+)
 def analyze_file(
     input_path: str,
     mapping_path: str | None,
@@ -354,7 +459,9 @@ def analyze_file(
     report_path: str | None,
 ) -> None:
     """Deprecated alias for analyze on CSV/XLSX input."""
-    click.echo("Warning: 'analyze-file' is deprecated; use 'analyze --input ...' instead.", err=True)
+    click.echo(
+        "Warning: 'analyze-file' is deprecated; use 'analyze --input ...' instead.", err=True
+    )
     try:
         input_payload = _load_analysis_payload(
             input_path=input_path,
@@ -378,7 +485,13 @@ def analyze_file(
 
 @cli.command("analyze-text", epilog=ANALYZE_TEXT_EPILOG)
 @click.option("--text", required=False, default=None, help="Raw pasted text.")
-@click.option("--text-file", "text_file", required=False, type=click.Path(exists=True), help="Path to pasted text file.")
+@click.option(
+    "--text-file",
+    "text_file",
+    required=False,
+    type=click.Path(exists=True),
+    help="Path to pasted text file.",
+)
 @click.option("--experiment-name", default="text_input_experiment", show_default=True)
 @click.option("--method", default="bayesian", show_default=True)
 @click.option("--primary-metric", default="conversion_rate", show_default=True)
@@ -410,9 +523,18 @@ def analyze_text(
 
 @cli.command()
 @click.option("--method", type=click.Choice(["frequentist", "bayesian"]), default=None)
-@click.option("--baseline-rate", type=float, default=None, help="Baseline conversion rate, decimal (e.g. 0.04).")
-@click.option("--relative-mde", type=float, default=None, help="Relative MDE, decimal (e.g. 0.05 for +5%).")
-@click.option("--daily-traffic", type=int, default=None, help="Total daily traffic across variants.")
+@click.option(
+    "--baseline-rate",
+    type=float,
+    default=None,
+    help="Baseline conversion rate, decimal (e.g. 0.04).",
+)
+@click.option(
+    "--relative-mde", type=float, default=None, help="Relative MDE, decimal (e.g. 0.05 for +5%)."
+)
+@click.option(
+    "--daily-traffic", type=int, default=None, help="Total daily traffic across variants."
+)
 @click.option("--n-variants", type=int, default=2, show_default=True)
 @click.option("--alpha", type=float, default=0.05, show_default=True)
 @click.option("--power", type=float, default=0.8, show_default=True)
@@ -422,9 +544,23 @@ def analyze_text(
 @click.option("--assurance-target", type=float, default=0.8, show_default=True)
 @click.option("--max-days", type=int, default=60, show_default=True)
 @click.option("--output", "output_path", required=False, type=click.Path())
-@click.option("--prompt-text", required=False, default=None, help="Natural-language assumptions text.")
-@click.option("--input", "input_path", required=False, type=click.Path(exists=True), help="CSV/XLSX input for duration assumptions.")
-@click.option("--mapping", "mapping_path", required=False, type=click.Path(exists=True), help="JSON mapping for duration table columns.")
+@click.option(
+    "--prompt-text", required=False, default=None, help="Natural-language assumptions text."
+)
+@click.option(
+    "--input",
+    "input_path",
+    required=False,
+    type=click.Path(exists=True),
+    help="CSV/XLSX input for duration assumptions.",
+)
+@click.option(
+    "--mapping",
+    "mapping_path",
+    required=False,
+    type=click.Path(exists=True),
+    help="JSON mapping for duration table columns.",
+)
 @click.option("--sheet", required=False, default=None, help="Excel sheet name for duration input.")
 def duration(
     method: str | None,
@@ -468,7 +604,9 @@ def duration(
         method = method or "frequentist"
         baseline_rate = baseline_rate if baseline_rate is not None else parsed["baseline_rate"]
         relative_mde = relative_mde if relative_mde is not None else parsed["relative_mde"]
-        daily_traffic = daily_traffic if daily_traffic is not None else parsed["daily_total_traffic"]
+        daily_traffic = (
+            daily_traffic if daily_traffic is not None else parsed["daily_total_traffic"]
+        )
         alpha = alpha if alpha is not None else parsed["alpha"]
         power = power if power is not None else parsed["power"]
         n_variants = n_variants if n_variants is not None else parsed["n_variants"]
@@ -523,7 +661,9 @@ def duration(
 
 @cli.command()
 @click.option("--strict", is_flag=True, help="Exit non-zero if any check fails.")
-@click.option("--json-output", "json_output", is_flag=True, help="Print machine-readable JSON output.")
+@click.option(
+    "--json-output", "json_output", is_flag=True, help="Print machine-readable JSON output."
+)
 def doctor(strict: bool, json_output: bool) -> None:
     """Run environment and dependency checks for agents/CI."""
     result = run_doctor()
@@ -534,7 +674,9 @@ def doctor(strict: bool, json_output: bool) -> None:
         click.echo(f"Doctor status: {status}")
         for check in result["checks"]:
             icon = "PASS" if check["passed"] else "FAIL"
-            click.echo(f"- {icon} {check['name']}: {check['detail']} (required {check['required']})")
+            click.echo(
+                f"- {icon} {check['name']}: {check['detail']} (required {check['required']})"
+            )
     if strict and not result["ok"]:
         raise SystemExit(1)
 
@@ -561,9 +703,6 @@ def example_duration_prompt_cmd() -> None:
 def example_duration_mapping_cmd() -> None:
     """Print a duration mapping JSON for CSV/XLSX."""
     click.echo(json.dumps(example_duration_mapping(), indent=2))
-
-
-
 
 
 if __name__ == "__main__":

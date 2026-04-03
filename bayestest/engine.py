@@ -6,9 +6,9 @@ from statistics import NormalDist
 import numpy as np
 
 from .models import (
-    AnalysisSettings,
     AnalysisInput,
     AnalysisResult,
+    AnalysisSettings,
     ComparisonResult,
     DecisionPolicy,
     DecisionThresholds,
@@ -30,7 +30,9 @@ def parse_payload(payload: dict) -> AnalysisInput:
     if decision_policy_payload is not None:
         enabled = bool(decision_policy_payload.get("enabled", True))
         merged_thresholds = {
-            "bayes_prob_beats_control": decision_policy_payload.get("bayes_prob_beats_control", 0.95),
+            "bayes_prob_beats_control": decision_policy_payload.get(
+                "bayes_prob_beats_control", 0.95
+            ),
             "max_expected_loss": decision_policy_payload.get("max_expected_loss", 0.001),
         }
         thresholds = DecisionThresholds(**merged_thresholds) if enabled else None
@@ -48,7 +50,9 @@ def parse_payload(payload: dict) -> AnalysisInput:
     elif method == "bayesian":
         decision_policy = DecisionPolicy(enabled=False, thresholds=None, source="none")
     else:
-        decision_policy = DecisionPolicy(enabled=True, thresholds=None, source="implicit_method_defaults")
+        decision_policy = DecisionPolicy(
+            enabled=True, thresholds=None, source="implicit_method_defaults"
+        )
 
     return AnalysisInput(
         experiment_name=payload["experiment_name"],
@@ -97,7 +101,9 @@ def validate_input(inp: AnalysisInput) -> None:
 
     if inp.method == "bayesian" and inp.decision_policy.enabled:
         if inp.decision_policy.thresholds is None:
-            raise ValueError("Bayesian decision policy is enabled but thresholds were not provided.")
+            raise ValueError(
+                "Bayesian decision policy is enabled but thresholds were not provided."
+            )
         if not (0 < inp.decision_policy.thresholds.bayes_prob_beats_control < 1):
             raise ValueError("bayes_prob_beats_control must be in (0, 1).")
         if inp.decision_policy.thresholds.max_expected_loss < 0:
@@ -154,7 +160,7 @@ def evaluate_srm(variants: list[VariantInput]) -> SrmResult:
     expected = [total / k for _ in range(k)]
 
     chi2 = 0.0
-    for obs, exp in zip(observed, expected):
+    for obs, exp in zip(observed, expected, strict=False):
         if exp > 0:
             chi2 += ((obs - exp) ** 2) / exp
 
@@ -193,16 +199,12 @@ def evaluate_guardrails(inp: AnalysisInput) -> list[GuardrailResult]:
         if direction == "decrease":
             passed = relative_change <= item.max_relative_change
             reason = (
-                "Within allowed increase"
-                if passed
-                else "Guardrail worsened above allowed increase"
+                "Within allowed increase" if passed else "Guardrail worsened above allowed increase"
             )
         else:
             passed = relative_change >= -item.max_relative_change
             reason = (
-                "Within allowed decrease"
-                if passed
-                else "Guardrail dropped below allowed decrease"
+                "Within allowed decrease" if passed else "Guardrail dropped below allowed decrease"
             )
 
         results.append(
@@ -481,9 +483,7 @@ def two_proportion_test(x1: int, n1: int, x2: int, n2: int) -> tuple[float, floa
     z = (p2 - p1) / se
     p_value = 2 * (1 - NormalDist().cdf(abs(z)))
 
-    unpooled_se = math.sqrt(
-        max((p1 * (1 - p1) / n1) + (p2 * (1 - p2) / n2), 1e-18)
-    )
+    unpooled_se = math.sqrt(max((p1 * (1 - p1) / n1) + (p2 * (1 - p2) / n2), 1e-18))
 
     return p_value, z, unpooled_se
 
@@ -494,7 +494,9 @@ def obrien_fleming_alpha_spent(alpha: float, info_fraction: float) -> float:
     return min(max(spent, 1e-12), alpha)
 
 
-def mean_and_var_from_aggregates(n: int, value_sum: float, value_sum_squares: float) -> tuple[float, float]:
+def mean_and_var_from_aggregates(
+    n: int, value_sum: float, value_sum_squares: float
+) -> tuple[float, float]:
     mean = value_sum / max(n, 1)
     if n <= 1:
         return mean, 0.0

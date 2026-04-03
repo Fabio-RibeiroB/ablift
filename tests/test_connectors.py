@@ -17,9 +17,7 @@ class ConnectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = Path(tmp) / "exp.csv"
             csv_path.write_text(
-                "variant_name,users,orders,is_control\n"
-                "control,1000,40,true\n"
-                "v1,1000,45,false\n",
+                "variant_name,users,orders,is_control\ncontrol,1000,40,true\nv1,1000,45,false\n",
                 encoding="utf-8",
             )
 

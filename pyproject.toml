@@ -23,6 +23,10 @@ test = [
   "scipy>=1.11",
   "statsmodels>=0.14",
 ]
+lint = [
+  "pre-commit>=4.0",
+  "ruff>=0.11",
+]
 
 [project.scripts]
 bayestest = "bayestest.cli:cli"
@@ -33,6 +37,13 @@ include = ["bayestest*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.bayestest]
 method = "bayesian"

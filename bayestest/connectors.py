@@ -7,12 +7,34 @@ from typing import Any
 from openpyxl import load_workbook
 
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    "variant": ("variant", "variant_name", "group", "arm", "treatment", "bucket", "cohort", "experience"),
+    "variant": (
+        "variant",
+        "variant_name",
+        "group",
+        "arm",
+        "treatment",
+        "bucket",
+        "cohort",
+        "experience",
+    ),
     "visitors": ("visitors", "users", "sessions", "visits", "exposures", "trials", "n"),
-    "conversions": ("conversions", "orders", "purchases", "signups", "successes", "click_sessions", "clicks"),
+    "conversions": (
+        "conversions",
+        "orders",
+        "purchases",
+        "signups",
+        "successes",
+        "click_sessions",
+        "clicks",
+    ),
     "is_control": ("is_control", "control", "is_baseline"),
     "revenue_sum": ("revenue_sum", "sum_revenue", "gross_revenue_sum"),
-    "revenue_sum_squares": ("revenue_sum_squares", "sum_revenue_squares", "revenue_ss", "revenue_sq_sum"),
+    "revenue_sum_squares": (
+        "revenue_sum_squares",
+        "sum_revenue_squares",
+        "revenue_ss",
+        "revenue_sq_sum",
+    ),
 }
 
 
@@ -69,14 +91,23 @@ def _normalize_header(value: Any) -> str:
     return str(value or "").strip().lower().replace(" ", "_")
 
 
-def infer_columns(rows: list[dict[str, Any]], primary_metric: str = "conversion_rate") -> dict[str, str]:
+def infer_columns(
+    rows: list[dict[str, Any]], primary_metric: str = "conversion_rate"
+) -> dict[str, str]:
     if not rows:
         raise ValueError("Input table is empty.")
 
     headers = {str(key): _normalize_header(key) for key in rows[0].keys()}
     inferred: dict[str, str] = {}
 
-    for field in ("variant", "visitors", "conversions", "is_control", "revenue_sum", "revenue_sum_squares"):
+    for field in (
+        "variant",
+        "visitors",
+        "conversions",
+        "is_control",
+        "revenue_sum",
+        "revenue_sum_squares",
+    ):
         if field in {"revenue_sum", "revenue_sum_squares"} and primary_metric != "arpu":
             continue
         for original, normalized in headers.items():
@@ -124,17 +155,23 @@ def build_payload_from_rows(
     defaults: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = merge_analysis_config(mapping=mapping, defaults=defaults)
-    primary_metric = str(config.get("primary_metric") or detect_primary_metric(rows, mapping)).strip().lower()
+    primary_metric = (
+        str(config.get("primary_metric") or detect_primary_metric(rows, mapping)).strip().lower()
+    )
     inferred_columns = infer_columns(rows, primary_metric=primary_metric)
     columns = config.get("columns", {})
     name_col = columns.get("variant") or inferred_columns.get("variant") or "variant"
     visitors_col = columns.get("visitors") or inferred_columns.get("visitors") or "visitors"
-    conversions_col = columns.get("conversions") or inferred_columns.get("conversions") or "conversions"
+    conversions_col = (
+        columns.get("conversions") or inferred_columns.get("conversions") or "conversions"
+    )
     is_control_col = columns.get("is_control")
     if not is_control_col:
         is_control_col = inferred_columns.get("is_control")
     revenue_sum_col = columns.get("revenue_sum") or inferred_columns.get("revenue_sum")
-    revenue_sum_sq_col = columns.get("revenue_sum_squares") or inferred_columns.get("revenue_sum_squares")
+    revenue_sum_sq_col = columns.get("revenue_sum_squares") or inferred_columns.get(
+        "revenue_sum_squares"
+    )
 
     control_rule = config.get("control", {})
     control_col = control_rule.get("column")
@@ -166,7 +203,9 @@ def build_payload_from_rows(
         if is_control_col:
             is_control = _to_bool(row.get(is_control_col))
         elif control_col is not None and control_value is not None:
-            is_control = str(row.get(control_col, "")).strip().lower() == str(control_value).strip().lower()
+            is_control = (
+                str(row.get(control_col, "")).strip().lower() == str(control_value).strip().lower()
+            )
 
         variant_obj = {
             "name": variant_name,

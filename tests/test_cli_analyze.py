@@ -35,9 +35,7 @@ class AnalyzeCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / "input.csv"
             input_path.write_text(
-                "variant_name,sessions,orders\n"
-                "control,1000,40\n"
-                "v1,1000,45\n",
+                "variant_name,sessions,orders\ncontrol,1000,40\nv1,1000,45\n",
                 encoding="utf-8",
             )
             result = runner.invoke(cli, ["analyze", "--input", str(input_path)])
@@ -46,7 +44,9 @@ class AnalyzeCliTests(unittest.TestCase):
         payload = json.loads(result.output)
         self.assertEqual(payload["control_variant"], "control")
         self.assertIsNone(payload["recommendation"])
-        self.assertEqual(payload["analysis_settings"]["input_interpretation"]["source_type"], "table")
+        self.assertEqual(
+            payload["analysis_settings"]["input_interpretation"]["source_type"], "table"
+        )
         self.assertFalse(payload["analysis_settings"]["input_interpretation"]["mapping_used"])
         self.assertEqual(
             payload["analysis_settings"]["input_interpretation"]["resolved_columns"]["visitors"],
@@ -59,9 +59,7 @@ class AnalyzeCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / "input.csv"
             input_path.write_text(
-                "variant_name,sessions,orders\n"
-                "control,1000,40\n"
-                "v1,1000,45\n",
+                "variant_name,sessions,orders\ncontrol,1000,40\nv1,1000,45\n",
                 encoding="utf-8",
             )
             result = runner.invoke(cli, ["analyze-file", "--input", str(input_path)])
@@ -76,14 +74,12 @@ class AnalyzeCliTests(unittest.TestCase):
             input_path = Path(tmp) / "input.csv"
             pyproject_path = Path(tmp) / "pyproject.toml"
             input_path.write_text(
-                "variant_name,sessions,orders\n"
-                "control,1000,40\n"
-                "v1,1000,45\n",
+                "variant_name,sessions,orders\ncontrol,1000,40\nv1,1000,45\n",
                 encoding="utf-8",
             )
             pyproject_path.write_text(
                 "[tool.bayestest]\n"
-                "method = \"bayesian\"\n"
+                'method = "bayesian"\n'
                 "samples = 10000\n"
                 "\n"
                 "[tool.bayestest.decision_policy]\n"
@@ -120,9 +116,7 @@ class AnalyzeCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / "input.csv"
             input_path.write_text(
-                "group_name,sessions\n"
-                "control,1000\n"
-                "v1,1000\n",
+                "group_name,sessions\ncontrol,1000\nv1,1000\n",
                 encoding="utf-8",
             )
             result = runner.invoke(cli, ["analyze", "--input", str(input_path)])
