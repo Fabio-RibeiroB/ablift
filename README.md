@@ -47,6 +47,7 @@ Show available commands:
 
 ```bash
 bayestest --help
+bayestest analyze --help
 ```
 
 Generate a JSON input template:
@@ -144,6 +145,12 @@ The input contract is strict about semantics, not source column names.
 - decision policy: thresholds used to turn estimates into actions
 
 For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `bayestest` reports the posterior estimates but leaves `recommendation` as `null`.
+
+For CSV/XLSX input, the JSON output also includes `analysis_settings.input_interpretation` so agents can see:
+- whether a mapping file was used
+- which columns were inferred
+- which columns were ultimately resolved
+- how the control row was identified
 
 For analysis inputs:
 - at least 2 variants are required

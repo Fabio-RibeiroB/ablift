@@ -50,6 +50,7 @@ class AnalysisInput:
     decision_policy: DecisionPolicy = field(default_factory=DecisionPolicy)
     random_seed: int = 7
     samples: int = 50000
+    input_interpretation: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -63,6 +64,7 @@ class AnalysisSettings:
     random_seed: int
     priors: dict[str, Any]
     decision_policy: dict[str, Any]
+    input_interpretation: dict[str, Any]
 
 
 @dataclass

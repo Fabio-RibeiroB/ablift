@@ -63,6 +63,7 @@ def parse_payload(payload: dict) -> AnalysisInput:
         decision_policy=decision_policy,
         random_seed=payload.get("random_seed", 7),
         samples=payload.get("samples", 50000),
+        input_interpretation=payload.get("input_interpretation", {}),
     )
 
 
@@ -313,6 +314,7 @@ def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
         random_seed=inp.random_seed,
         priors=priors,
         decision_policy=policy,
+        input_interpretation=inp.input_interpretation,
     )
 
 

@@ -43,8 +43,15 @@ class AnalyzeCliTests(unittest.TestCase):
             result = runner.invoke(cli, ["analyze", "--input", str(input_path)])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn('"control_variant": "control"', result.output)
-        self.assertIn('"recommendation": null', result.output)
+        payload = json.loads(result.output)
+        self.assertEqual(payload["control_variant"], "control")
+        self.assertIsNone(payload["recommendation"])
+        self.assertEqual(payload["analysis_settings"]["input_interpretation"]["source_type"], "table")
+        self.assertFalse(payload["analysis_settings"]["input_interpretation"]["mapping_used"])
+        self.assertEqual(
+            payload["analysis_settings"]["input_interpretation"]["resolved_columns"]["visitors"],
+            "sessions",
+        )
 
     def test_analyze_file_alias_still_works(self):
         runner = CliRunner()
@@ -96,6 +103,33 @@ class AnalyzeCliTests(unittest.TestCase):
         self.assertIn('"samples": 10000', result.output)
         self.assertNotIn('"recommendation": null', result.output)
         self.assertIn('"decision_policy"', result.output)
+
+    def test_analyze_help_includes_examples(self):
+        runner = CliRunner()
+
+        result = runner.invoke(cli, ["analyze", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Examples:", result.output)
+        self.assertIn("bayestest analyze --input experiment.csv", result.output)
+        self.assertIn("--enable-recommendation --prob-threshold 0.9", result.output)
+
+    def test_analyze_surfaces_actionable_column_error(self):
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "input.csv"
+            input_path.write_text(
+                "group_name,sessions\n"
+                "control,1000\n"
+                "v1,1000\n",
+                encoding="utf-8",
+            )
+            result = runner.invoke(cli, ["analyze", "--input", str(input_path)])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Pass --mapping with an explicit columns section", result.output)
+        self.assertIn("Tried aliases", result.output)
 
 
 if __name__ == "__main__":

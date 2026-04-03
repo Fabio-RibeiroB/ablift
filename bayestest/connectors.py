@@ -114,7 +114,7 @@ def _require_column(rows: list[dict[str, Any]], column_name: str, semantic_name:
         aliases = ", ".join(COLUMN_ALIASES.get(semantic_name, ()))
         raise ValueError(
             f"Could not find a column for '{semantic_name}'. "
-            f"Pass a mapping file or rename the source column. Tried aliases: {aliases}."
+            f"Pass --mapping with an explicit columns section or rename the source column. Tried aliases: {aliases}."
         )
 
 
@@ -196,6 +196,32 @@ def build_payload_from_rows(
         "samples": config.get("samples", 50000),
         "random_seed": config.get("random_seed", 7),
         "variants": variants,
+        "input_interpretation": {
+            "source_type": "table",
+            "row_count": len(variants),
+            "mapping_used": mapping is not None,
+            "inferred_columns": inferred_columns,
+            "resolved_columns": {
+                "variant": name_col,
+                "visitors": visitors_col,
+                "conversions": conversions_col,
+                "is_control": is_control_col,
+                "revenue_sum": revenue_sum_col,
+                "revenue_sum_squares": revenue_sum_sq_col,
+            },
+            "control_detection": (
+                {
+                    "mode": "boolean_column",
+                    "column": is_control_col,
+                }
+                if is_control_col
+                else {
+                    "mode": "value_match",
+                    "column": control_col,
+                    "value": control_value,
+                }
+            ),
+        },
     }
 
     return payload

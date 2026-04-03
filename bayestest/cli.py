@@ -15,6 +15,22 @@ from .planning import bayesian_duration_conversion, frequentist_duration_convers
 from .reporting import build_markdown_report
 from .text_parser import parse_duration_prompt, parse_variant_lines
 
+ANALYZE_EPILOG = """\b
+Examples:
+  bayestest analyze --input experiment.json
+  bayestest analyze --input experiment.csv
+  bayestest analyze --input experiment.xlsx --sheet Results
+  bayestest analyze --input experiment.csv --mapping mapping.json
+  bayestest analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
+  bayestest analyze --input experiment.json --report report.md
+"""
+
+ANALYZE_TEXT_EPILOG = """\b
+Examples:
+  bayestest analyze-text --text "control: 1000 visitors, 40 conversions; v1: 1000 visitors, 45 conversions"
+  bayestest analyze-text --text-file summary.txt --output result.json
+"""
+
 
 def _write_text(path: str, content: str) -> None:
     out = Path(path)
@@ -61,7 +77,15 @@ def _load_analysis_payload(
     suffix = Path(input_path).suffix.lower()
     if suffix == ".json":
         input_payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
-        return _deep_merge(config_payload, _deep_merge(input_payload, defaults))
+        payload = _deep_merge(config_payload, _deep_merge(input_payload, defaults))
+        payload.setdefault(
+            "input_interpretation",
+            {
+                "source_type": "json",
+                "mapping_used": False,
+            },
+        )
+        return payload
 
     if suffix not in {".csv", ".xlsx", ".xlsm"}:
         raise click.ClickException("Unsupported analysis input. Use .json, .csv, .xlsx, or .xlsm.")
@@ -235,7 +259,7 @@ def cli() -> None:
     """Agent-friendly CLI for Bayesian and frequentist sequential A/B/n decisions."""
 
 
-@cli.command()
+@cli.command(epilog=ANALYZE_EPILOG)
 @click.option("--input", "input_path", required=True, type=click.Path(exists=True), help="Path to input .json, .csv, .xlsx, or .xlsm.")
 @click.option("--mapping", "mapping_path", required=False, type=click.Path(exists=True), help="Optional JSON mapping for CSV/XLSX column names.")
 @click.option("--sheet", required=False, default=None, help="Excel sheet name for .xlsx/.xlsm input.")
@@ -293,15 +317,21 @@ def analyze(
         "samples": samples,
         "random_seed": random_seed,
     }
-    input_payload = _load_analysis_payload(
-        input_path=input_path,
-        mapping_path=mapping_path,
-        sheet=sheet,
-        defaults=defaults,
-    )
+    try:
+        input_payload = _load_analysis_payload(
+            input_path=input_path,
+            mapping_path=mapping_path,
+            sheet=sheet,
+            defaults=defaults,
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
     if Path(input_path).suffix.lower() in {".csv", ".xlsx", ".xlsm"} and input_payload.get("experiment_name") in {None, "", "table_input_experiment"}:
         input_payload["experiment_name"] = Path(input_path).stem
-    _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
+    try:
+        _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command("analyze-file", hidden=True)
@@ -325,22 +355,28 @@ def analyze_file(
 ) -> None:
     """Deprecated alias for analyze on CSV/XLSX input."""
     click.echo("Warning: 'analyze-file' is deprecated; use 'analyze --input ...' instead.", err=True)
-    input_payload = _load_analysis_payload(
-        input_path=input_path,
-        mapping_path=mapping_path,
-        sheet=sheet,
-        defaults={
-            "experiment_name": experiment_name,
-            "method": method,
-            "primary_metric": primary_metric,
-        },
-    )
+    try:
+        input_payload = _load_analysis_payload(
+            input_path=input_path,
+            mapping_path=mapping_path,
+            sheet=sheet,
+            defaults={
+                "experiment_name": experiment_name,
+                "method": method,
+                "primary_metric": primary_metric,
+            },
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
     if input_payload.get("experiment_name") in {None, "", "table_input_experiment"}:
         input_payload["experiment_name"] = Path(input_path).stem
-    _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
+    try:
+        _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
-@cli.command("analyze-text")
+@cli.command("analyze-text", epilog=ANALYZE_TEXT_EPILOG)
 @click.option("--text", required=False, default=None, help="Raw pasted text.")
 @click.option("--text-file", "text_file", required=False, type=click.Path(exists=True), help="Path to pasted text file.")
 @click.option("--experiment-name", default="text_input_experiment", show_default=True)
