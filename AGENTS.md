@@ -15,6 +15,4 @@ ablift doctor --strict # self-check
 
 ## Rules
 - Use `uv` for all Python commands.
-- Prefer `ablift analyze --input <file>` over library imports.
-- Keep Bayesian recommendations policy-driven; read `[tool.ablift]` from `pyproject.toml`.
-- Do not recommend shipping when SRM or guardrails fail.
+- Read `[tool.ablift]` from `pyproject.toml` for default config.
