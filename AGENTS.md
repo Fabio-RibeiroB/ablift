@@ -4,7 +4,7 @@
 
 ## Setup
 ```bash
-uv venv .venv && uv pip install -e ".[test,lint]"
+uv sync --all-groups
 ```
 
 ## Commands
