@@ -30,6 +30,13 @@ class DecisionThresholds:
 
 
 @dataclass
+class DecisionPolicy:
+    enabled: bool = False
+    thresholds: DecisionThresholds | None = None
+    source: str = "none"
+
+
+@dataclass
 class AnalysisInput:
     experiment_name: str
     method: str
@@ -40,9 +47,22 @@ class AnalysisInput:
     max_looks: int = 1
     information_fraction: float | None = None
     guardrails: list[GuardrailInput] = field(default_factory=list)
-    decision_thresholds: DecisionThresholds = field(default_factory=DecisionThresholds)
+    decision_policy: DecisionPolicy = field(default_factory=DecisionPolicy)
     random_seed: int = 7
     samples: int = 50000
+
+
+@dataclass
+class AnalysisSettings:
+    primary_metric: str
+    alpha: float
+    look_index: int
+    max_looks: int
+    information_fraction: float | None
+    samples: int
+    random_seed: int
+    priors: dict[str, Any]
+    decision_policy: dict[str, Any]
 
 
 @dataclass
@@ -97,12 +117,13 @@ class SrmResult:
 class AnalysisResult:
     experiment_name: str
     method: str
+    analysis_settings: AnalysisSettings
     control_variant: str
     comparisons: list[ComparisonResult]
     guardrails_passed: bool
     guardrails: list[GuardrailResult]
     srm: SrmResult
-    recommendation: Recommendation
+    recommendation: Recommendation | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

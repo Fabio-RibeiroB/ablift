@@ -6,9 +6,11 @@ from statistics import NormalDist
 import numpy as np
 
 from .models import (
+    AnalysisSettings,
     AnalysisInput,
     AnalysisResult,
     ComparisonResult,
+    DecisionPolicy,
     DecisionThresholds,
     GuardrailInput,
     GuardrailResult,
@@ -21,11 +23,36 @@ from .models import (
 def parse_payload(payload: dict) -> AnalysisInput:
     variants = [VariantInput(**row) for row in payload["variants"]]
     guardrails = [GuardrailInput(**row) for row in payload.get("guardrails", [])]
-    threshold_payload = payload.get("decision_thresholds", {})
+    decision_policy_payload = payload.get("decision_policy")
+    threshold_payload = payload.get("decision_thresholds")
+    method = payload["method"]
+
+    if decision_policy_payload is not None:
+        enabled = bool(decision_policy_payload.get("enabled", True))
+        merged_thresholds = {
+            "bayes_prob_beats_control": decision_policy_payload.get("bayes_prob_beats_control", 0.95),
+            "max_expected_loss": decision_policy_payload.get("max_expected_loss", 0.001),
+        }
+        thresholds = DecisionThresholds(**merged_thresholds) if enabled else None
+        decision_policy = DecisionPolicy(
+            enabled=enabled,
+            thresholds=thresholds,
+            source="decision_policy",
+        )
+    elif threshold_payload is not None:
+        decision_policy = DecisionPolicy(
+            enabled=True,
+            thresholds=DecisionThresholds(**threshold_payload),
+            source="decision_thresholds",
+        )
+    elif method == "bayesian":
+        decision_policy = DecisionPolicy(enabled=False, thresholds=None, source="none")
+    else:
+        decision_policy = DecisionPolicy(enabled=True, thresholds=None, source="implicit_method_defaults")
 
     return AnalysisInput(
         experiment_name=payload["experiment_name"],
-        method=payload["method"],
+        method=method,
         variants=variants,
         primary_metric=payload.get("primary_metric", "conversion_rate"),
         alpha=payload.get("alpha", 0.05),
@@ -33,7 +60,7 @@ def parse_payload(payload: dict) -> AnalysisInput:
         max_looks=payload.get("max_looks", 1),
         information_fraction=payload.get("information_fraction"),
         guardrails=guardrails,
-        decision_thresholds=DecisionThresholds(**threshold_payload),
+        decision_policy=decision_policy,
         random_seed=payload.get("random_seed", 7),
         samples=payload.get("samples", 50000),
     )
@@ -54,7 +81,9 @@ def validate_input(inp: AnalysisInput) -> None:
             raise ValueError(f"conversions must be non-negative for {variant.name}.")
         if variant.conversions > variant.visitors:
             raise ValueError(
-                f"conversions cannot exceed visitors for {variant.name}."
+                f"conversions cannot exceed visitors for {variant.name}. "
+                "This usually means the success metric is not binary per denominator unit "
+                "(for example total clicks per visit instead of visits with at least one click)."
             )
 
     if inp.alpha <= 0 or inp.alpha >= 1:
@@ -64,6 +93,14 @@ def validate_input(inp: AnalysisInput) -> None:
         raise ValueError("method must be 'bayesian' or 'frequentist_sequential'.")
     if inp.primary_metric not in {"conversion_rate", "arpu"}:
         raise ValueError("primary_metric must be 'conversion_rate' or 'arpu'.")
+
+    if inp.method == "bayesian" and inp.decision_policy.enabled:
+        if inp.decision_policy.thresholds is None:
+            raise ValueError("Bayesian decision policy is enabled but thresholds were not provided.")
+        if not (0 < inp.decision_policy.thresholds.bayes_prob_beats_control < 1):
+            raise ValueError("bayes_prob_beats_control must be in (0, 1).")
+        if inp.decision_policy.thresholds.max_expected_loss < 0:
+            raise ValueError("max_expected_loss must be non-negative.")
 
     if inp.primary_metric == "arpu":
         for variant in inp.variants:
@@ -99,6 +136,7 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     return AnalysisResult(
         experiment_name=inp.experiment_name,
         method=inp.method,
+        analysis_settings=build_analysis_settings(inp),
         control_variant=control.name,
         comparisons=comparisons,
         guardrails_passed=guardrails_passed,
@@ -229,6 +267,53 @@ def analyze_bayesian_conversion(
         )
 
     return out
+
+
+def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
+    if inp.method == "bayesian" and inp.primary_metric == "conversion_rate":
+        priors = {
+            "family": "beta_binomial",
+            "alpha_prior": 1.0,
+            "beta_prior": 1.0,
+        }
+    elif inp.method == "bayesian" and inp.primary_metric == "arpu":
+        priors = {
+            "family": "normal_inverse_gamma",
+            "mu0": 0.0,
+            "kappa0": 1e-6,
+            "alpha0": 1.0,
+            "beta0": 1.0,
+        }
+    else:
+        priors = {"family": "not_applicable"}
+
+    if inp.decision_policy.thresholds is None:
+        policy = {
+            "enabled": inp.decision_policy.enabled,
+            "source": inp.decision_policy.source,
+            "thresholds": None,
+        }
+    else:
+        policy = {
+            "enabled": inp.decision_policy.enabled,
+            "source": inp.decision_policy.source,
+            "thresholds": {
+                "bayes_prob_beats_control": inp.decision_policy.thresholds.bayes_prob_beats_control,
+                "max_expected_loss": inp.decision_policy.thresholds.max_expected_loss,
+            },
+        }
+
+    return AnalysisSettings(
+        primary_metric=inp.primary_metric,
+        alpha=inp.alpha,
+        look_index=inp.look_index,
+        max_looks=inp.max_looks,
+        information_fraction=inp.information_fraction,
+        samples=inp.samples,
+        random_seed=inp.random_seed,
+        priors=priors,
+        decision_policy=policy,
+    )
 
 
 def analyze_bayesian_arpu(
@@ -448,7 +533,7 @@ def recommend(
     comparisons: list[ComparisonResult],
     guardrails_passed: bool,
     srm: SrmResult,
-) -> Recommendation:
+) -> Recommendation | None:
     risk_flags: list[str] = []
     if not srm.passed:
         risk_flags.append("srm_detected")
@@ -476,8 +561,11 @@ def recommend(
     best = max(comparisons, key=lambda x: x.absolute_lift)
 
     if inp.method == "bayesian":
-        prob_threshold = inp.decision_thresholds.bayes_prob_beats_control
-        loss_threshold = inp.decision_thresholds.max_expected_loss
+        if not inp.decision_policy.enabled or inp.decision_policy.thresholds is None:
+            return None
+
+        prob_threshold = inp.decision_policy.thresholds.bayes_prob_beats_control
+        loss_threshold = inp.decision_policy.thresholds.max_expected_loss
 
         if (
             best.probability_beats_control is not None
@@ -495,6 +583,24 @@ def recommend(
                 ),
                 decision_confidence=float(best.probability_beats_control),
                 next_best_action="Roll out gradually and monitor guardrails.",
+                risk_flags=risk_flags,
+            )
+
+        if (
+            best.probability_beats_control is not None
+            and best.expected_loss is not None
+            and best.absolute_lift < 0
+            and best.probability_beats_control <= (1.0 - prob_threshold)
+        ):
+            return Recommendation(
+                action="do_not_ship",
+                rationale=(
+                    f"{best.treatment} is unlikely to beat control "
+                    f"(P(win)={best.probability_beats_control:.3f}, "
+                    f"expected_loss={best.expected_loss:.6f})."
+                ),
+                decision_confidence=float(1.0 - best.probability_beats_control),
+                next_best_action="Keep the control, or redefine the metric and test design before rerunning.",
                 risk_flags=risk_flags,
             )
 

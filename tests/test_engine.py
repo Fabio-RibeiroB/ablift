@@ -77,6 +77,21 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(result.srm.passed)
         self.assertEqual(result.recommendation.action, "investigate_data_quality")
 
+    def test_bayesian_without_decision_policy_returns_no_recommendation(self):
+        payload = {
+            "experiment_name": "exp",
+            "method": "bayesian",
+            "variants": [
+                {"name": "control", "visitors": 10000, "conversions": 500, "is_control": True},
+                {"name": "treatment", "visitors": 10000, "conversions": 520, "is_control": False},
+            ],
+        }
+
+        result = analyze(parse_payload(payload))
+        self.assertIsNone(result.recommendation)
+        self.assertEqual(result.analysis_settings.samples, 50000)
+        self.assertEqual(result.analysis_settings.priors["family"], "beta_binomial")
+
     def test_bayesian_arpu_probability_to_win(self):
         payload = {
             "experiment_name": "arpu_exp",

@@ -74,18 +74,42 @@ def _guardrail_lines(guardrails: list[GuardrailResult]) -> list[str]:
 
 
 def build_markdown_report(result: AnalysisResult) -> str:
+    recommendation_action = result.recommendation.action if result.recommendation else "not_evaluated"
+    recommendation_rationale = (
+        result.recommendation.rationale
+        if result.recommendation
+        else "No decision policy was provided, so estimates are reported without an automated recommendation."
+    )
+    recommendation_confidence = (
+        _fmt_float(result.recommendation.decision_confidence, 4)
+        if result.recommendation
+        else "n/a"
+    )
+    recommendation_next = (
+        result.recommendation.next_best_action
+        if result.recommendation
+        else "Provide an explicit decision policy if you want an automated recommendation."
+    )
+    recommendation_flags = (
+        ", ".join(result.recommendation.risk_flags) if result.recommendation else "none"
+    )
     lines = [
         f"# A/B Decision Report: {result.experiment_name}",
         "",
         "## Summary",
         f"- Method: `{result.method}`",
+        f"- Primary metric: `{result.analysis_settings.primary_metric}`",
+        f"- Posterior samples: `{result.analysis_settings.samples}`",
+        f"- Random seed: `{result.analysis_settings.random_seed}`",
+        f"- Priors: `{result.analysis_settings.priors}`",
+        f"- Decision policy: `{result.analysis_settings.decision_policy}`",
         f"- Control: `{result.control_variant}`",
         f"- Guardrails passed: `{result.guardrails_passed}`",
-        f"- Recommendation: `{result.recommendation.action}`",
-        f"- Rationale: {result.recommendation.rationale}",
-        f"- Decision confidence: {_fmt_float(result.recommendation.decision_confidence, 4)}",
-        f"- Next best action: {result.recommendation.next_best_action}",
-        f"- Risk flags: `{', '.join(result.recommendation.risk_flags) or 'none'}`",
+        f"- Recommendation: `{recommendation_action}`",
+        f"- Rationale: {recommendation_rationale}",
+        f"- Decision confidence: {recommendation_confidence}",
+        f"- Next best action: {recommendation_next}",
+        f"- Risk flags: `{recommendation_flags or 'none'}`",
         "",
         "## Data Quality",
         f"- SRM passed: `{result.srm.passed}`",
