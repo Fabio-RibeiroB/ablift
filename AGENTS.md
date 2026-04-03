@@ -1,6 +1,6 @@
 # Agent Notes
 
-`ablift` is a CLI for Bayesian and sequential A/B/n experiment analysis.
+`ablift` is a CLI for Bayesian and sequential A/B/n experiment analysis, designed to be called as a tool by AI agents.
 
 ## Setup
 ```bash
