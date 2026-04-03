@@ -15,4 +15,5 @@ ablift doctor --strict # self-check
 
 ## Rules
 - Use `uv` for all Python commands.
+- CLI uses Click; entry point is `ablift/cli.py`.
 - Read `[tool.ablift]` from `pyproject.toml` for default config.
