@@ -7,7 +7,10 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.ruff_cache/
 .codex
+*.ipynb
+examples/out/
 /input.json
 /output.json
 /report.md
