@@ -15,31 +15,81 @@ It supports:
 - Markdown report generation for human review
 - CSV/XLSX ingestion with mapping files
 
-## Install (uv)
+## Install
+
+```bash
+uv tool install .
+```
+
+This installs `bayestest` as a normal CLI tool and exposes the `bayestest` command on your `PATH`.
+
+To work from the repo during development:
 
 ```bash
 uv sync --group test
 ```
 
-Run commands through `uv` so the managed environment is always used.
-
-## CLI Usage
-
-- CLI available via `uv run bayestest --help`
-- Exactly one control variant in analysis inputs
-- Required variant fields: `name`, `visitors`, `conversions`
-- ARPU mode also requires: `revenue_sum`, `revenue_sum_squares`
-- CSV/XLSX mode requires mapping JSON (see `examples/` for samples)
-
-## CLI quickstart
-
-Generate an input template:
+Then run commands through the repo-managed environment:
 
 ```bash
-uv run bayestest example-input > input.json
+uv run bayestest --help
 ```
 
-Run analysis and write both JSON + report:
+If you want an editable install in an existing environment:
+
+```bash
+uv pip install -e .
+```
+
+## Quickstart
+
+Show available commands:
+
+```bash
+bayestest --help
+```
+
+Generate a JSON input template:
+
+```bash
+bayestest example-input > input.json
+```
+
+Run a Bayesian analysis from JSON:
+
+```bash
+bayestest analyze \
+  --input input.json \
+  --output output.json \
+  --report report.md
+```
+
+Run the same workflow from a CSV file with inferred columns:
+
+```bash
+bayestest analyze \
+  --input examples/conversion_multivariant.csv \
+  --output output.json \
+  --report report.md
+```
+
+Run with an explicit Bayesian decision policy:
+
+```bash
+bayestest analyze --input bayesian_input.csv
+```
+
+Run from CSV/XLSX with an explicit mapping file when the source headers are unusual:
+
+```bash
+bayestest analyze \
+  --input examples/conversion_multivariant.csv \
+  --mapping examples/mapping_conversion_bayes.json \
+  --output output.json \
+  --report report.md
+```
+
+If you are developing from the repo, use the same commands prefixed with `uv run`:
 
 ```bash
 uv run bayestest analyze \
@@ -48,15 +98,306 @@ uv run bayestest analyze \
   --report report.md
 ```
 
-Analyze directly from CSV/XLSX:
+## Command summary
+
+- `bayestest analyze`: analyze `.json`, `.csv`, `.xlsx`, or `.xlsm` input
+- `bayestest analyze-text`: parse pasted stats text into an analysis payload
+- `bayestest duration`: estimate runtime needed for a test
+- `bayestest doctor`: verify the environment and required dependencies
+- `bayestest example-input`: print a starter JSON payload
+- `bayestest example-mapping`: print a starter mapping file
+
+## Choosing the metric model
+
+Use `primary_metric: "conversion_rate"` when each row represents:
+- a denominator count
+- a success count
+- successes that cannot exceed the denominator
+
+Examples that fit this model:
+- sessions and click-through sessions
+- users and purchasers
+- emails delivered and openers
+- visits and visits with at least one signup
+
+Use `primary_metric: "arpu"` when you have aggregate revenue statistics per variant:
+- `visitors`
+- `conversions`
+- `revenue_sum`
+- `revenue_sum_squares`
+
+If your metric can happen multiple times per unit and the count can exceed the denominator, it is not a fit for the current `conversion_rate` model. For example:
+- visits and total clicks across all visits
+- users and page views
+- sessions and multiple add-to-cart events
+
+In those cases, either:
+- redefine the outcome as binary per unit, such as "visit with at least one click"
+- or use a different metric/model outside the current scope of this tool
+
+## Input rules
+
+The input contract is strict about semantics, not source column names.
+
+`bayestest` separates:
+- inference settings: priors, posterior sample count, random seed
+- decision policy: thresholds used to turn estimates into actions
+
+For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `bayestest` reports the posterior estimates but leaves `recommendation` as `null`.
+
+For analysis inputs:
+- at least 2 variants are required
+- exactly 1 variant must have `is_control: true`
+- `method` must be `bayesian` or `frequentist_sequential`
+- `primary_metric` must be `conversion_rate` or `arpu`
+- `visitors` must be a positive integer
+- `conversions` must be a non-negative integer
+- `conversions` cannot exceed `visitors`
+- for `arpu`, each variant must also include `revenue_sum` and `revenue_sum_squares`
+
+Bayesian defaults:
+- posterior sample count defaults to `50000`
+- random seed defaults to `7`
+- conversion-rate prior is `Beta(1, 1)`
+- ARPU prior is a weak `Normal-Inverse-Gamma` prior with `mu0=0`, `kappa0=1e-6`, `alpha0=1`, `beta0=1`
+
+Bayesian recommendations require an explicit decision policy, either in the input payload, via `[tool.bayestest]` in `pyproject.toml`, or via CLI flags such as:
+- `--enable-recommendation`
+- `--prob-threshold`
+- `--max-expected-loss`
+
+Internal field meanings:
+- `name`: variant label
+- `visitors`: denominator units exposed to the experiment
+- `conversions`: success units for the primary outcome
+- `is_control`: whether the row is the control variant
+
+The source headers do not need to be named `visitors` and `conversions`. You can map any business-specific column names into these internal fields.
+
+Good source-column examples:
+- `sessions` -> `visitors`
+- `click_sessions` -> `conversions`
+- `users_exposed` -> `visitors`
+- `orders` -> `conversions`
+- `visits` -> `visitors`
+- `signup_visits` -> `conversions`
+
+Ambiguous or risky source-column examples:
+- `clicks` -> `conversions` only if each denominator unit can contribute at most one click
+- `orders` -> `conversions` only if the metric is "users who ordered" or "visits with an order", not total order count when repeats are possible
+
+## JSON input
+
+Top-level fields:
+- `experiment_name` (str)
+- `method` (`"bayesian"` or `"frequentist_sequential"`)
+- `primary_metric` (`"conversion_rate"` or `"arpu"`)
+- `alpha` (float, default `0.05`)
+- `look_index` and `max_looks` (ints, sequential mode)
+- `information_fraction` (optional float in `(0, 1]`, overrides look/max_looks)
+- `variants` (list): exactly one row must include `"is_control": true`
+- `guardrails` (optional list)
+- `decision_policy` (optional):
+  - `enabled` (bool)
+  - `bayes_prob_beats_control`
+  - `max_expected_loss`
+- `decision_thresholds` (legacy alias, still supported):
+  - `bayes_prob_beats_control` (default `0.95`)
+  - `max_expected_loss` (default `0.001`)
+- `samples` (default `50000`, Bayesian mode)
+- `random_seed` (default `7`)
+
+Variant row:
+
+```json
+{
+  "name": "control",
+  "visitors": 100000,
+  "conversions": 4000,
+  "is_control": true
+}
+```
+
+For `primary_metric: "arpu"`, each variant also needs:
+- `revenue_sum`
+- `revenue_sum_squares`
+
+Minimal Bayesian conversion-rate example:
+
+```json
+{
+  "experiment_name": "homepage_cta",
+  "method": "bayesian",
+  "primary_metric": "conversion_rate",
+  "variants": [
+    {"name": "control", "visitors": 50000, "conversions": 2000, "is_control": true},
+    {"name": "v1", "visitors": 50000, "conversions": 2080, "is_control": false}
+  ]
+}
+```
+
+Bayesian ARPU probability-to-win example:
+
+```json
+{
+  "experiment_name": "pricing_page",
+  "method": "bayesian",
+  "primary_metric": "arpu",
+  "variants": [
+    {"name": "control", "visitors": 10000, "conversions": 550, "revenue_sum": 22000, "revenue_sum_squares": 150000, "is_control": true},
+    {"name": "v1", "visitors": 10000, "conversions": 570, "revenue_sum": 23500, "revenue_sum_squares": 170000, "is_control": false}
+  ]
+}
+```
+
+## CSV/XLSX input
+
+For tabular input, `bayestest analyze` tries to work out of the box.
+
+It can infer common headers such as:
+- variant: `variant`, `variant_name`, `group`, `arm`, `treatment`
+- denominator: `visitors`, `users`, `sessions`, `visits`, `exposures`
+- success count: `conversions`, `orders`, `purchases`, `signups`, `click_sessions`
+- control flag: `is_control`, `control`
+
+If there is no explicit control column, `bayestest` also treats a variant named `control` as the control row.
+
+### What mapping means
+
+A mapping file is a translation layer from raw source headers into the canonical fields used by the analysis engine.
+
+You only need a mapping when:
+- your headers do not match the common aliases
+- you want to force a specific interpretation
+- you want to store analysis settings together with the column mapping
+
+Generate a mapping template:
 
 ```bash
-uv run bayestest analyze-file \
-  --input examples/arpu_bayesian.xlsx \
-  --mapping examples/mapping_arpu_bayes.json \
-  --sheet Sheet1 \
-  --output output.json \
-  --report report.md
+bayestest example-mapping > mapping.json
+```
+
+Use `analyze` with `--mapping` when your source data uses business-specific column names that cannot be inferred reliably.
+
+Mapping keys:
+- `columns.variant`, `columns.visitors`, `columns.conversions`
+- optional `columns.is_control`
+- optional `columns.revenue_sum`, `columns.revenue_sum_squares`
+- optional control detection fallback: `control.column` + `control.value`
+
+Example source CSV using business names:
+
+```csv
+variant_name,sessions,click_sessions,is_control
+control,50000,2000,true
+v1,50000,2080,false
+v2,50000,2140,false
+```
+
+Matching mapping file:
+
+```json
+{
+  "experiment_name": "homepage_cta",
+  "method": "bayesian",
+  "primary_metric": "conversion_rate",
+  "columns": {
+    "variant": "variant_name",
+    "visitors": "sessions",
+    "conversions": "click_sessions",
+    "is_control": "is_control"
+  }
+}
+```
+
+Run it:
+
+```bash
+bayestest analyze \
+  --input input.csv \
+  --mapping mapping.json
+```
+
+The same structure works for `.xlsx` and `.xlsm`. Use `--sheet` to select a worksheet when needed.
+
+`analyze-file` still exists as a deprecated alias for compatibility, but `analyze` is the primary command now.
+
+### Reusable project config
+
+Use `[tool.bayestest]` in `pyproject.toml` when you want one decision policy and one set of Bayesian inference settings reused across analyses in the project.
+
+Example:
+
+```toml
+[tool.bayestest]
+method = "bayesian"
+primary_metric = "conversion_rate"
+samples = 50000
+random_seed = 7
+
+[tool.bayestest.decision_policy]
+enabled = true
+bayes_prob_beats_control = 0.95
+max_expected_loss = 0.001
+```
+
+Precedence is:
+- CLI flags
+- input file
+- `pyproject.toml` `[tool.bayestest]`
+- built-in defaults
+
+Bundled examples:
+- [examples/conversion_multivariant.csv](/home/fabio/Documents/GitHub/bayestest/examples/conversion_multivariant.csv)
+- [examples/mapping_conversion_bayes.json](/home/fabio/Documents/GitHub/bayestest/examples/mapping_conversion_bayes.json)
+- [examples/arpu_bayesian.csv](/home/fabio/Documents/GitHub/bayestest/examples/arpu_bayesian.csv)
+- [examples/mapping_arpu_bayes.json](/home/fabio/Documents/GitHub/bayestest/examples/mapping_arpu_bayes.json)
+- [examples/duration_mapping.json](/home/fabio/Documents/GitHub/bayestest/examples/duration_mapping.json)
+
+## More examples
+
+```json
+{
+  "experiment_name": "homepage_cta",
+  "method": "bayesian",
+  "primary_metric": "conversion_rate",
+  "variants": [
+    {"name": "control", "visitors": 50000, "conversions": 2000, "is_control": true},
+    {"name": "v1", "visitors": 50000, "conversions": 2080, "is_control": false},
+    {"name": "v2", "visitors": 50000, "conversions": 2140, "is_control": false}
+  ]
+}
+```
+
+Sequential ARPU at an early look:
+
+```json
+{
+  "experiment_name": "checkout_flow",
+  "method": "frequentist_sequential",
+  "primary_metric": "arpu",
+  "alpha": 0.05,
+  "look_index": 3,
+  "max_looks": 10,
+  "variants": [
+    {"name": "control", "visitors": 12000, "conversions": 610, "revenue_sum": 21000, "revenue_sum_squares": 150000, "is_control": true},
+    {"name": "v1", "visitors": 12000, "conversions": 640, "revenue_sum": 22400, "revenue_sum_squares": 167000, "is_control": false}
+  ]
+}
+```
+
+## Development
+
+Run the CLI from the repo:
+
+```bash
+uv run bayestest --help
+```
+
+Run the test suite:
+
+```bash
+uv run pytest
 ```
 
 Run all bundled demos:
@@ -85,7 +426,7 @@ uv run bayestest duration \
   --max-looks 10
 ```
 
-Estimate Bayesian duration (assurance simulation):
+Estimate Bayesian duration:
 
 ```bash
 uv run bayestest duration \
@@ -97,7 +438,7 @@ uv run bayestest duration \
   --max-days 60
 ```
 
-Analyze pasted variant text:
+Analyze pasted stats text:
 
 ```bash
 uv run bayestest analyze-text \
@@ -114,126 +455,16 @@ uv run bayestest duration \
   --sheet Sheet1
 ```
 
-## Development
-
-Run the test suite:
-
-```bash
-uv run pytest
-```
-
 ## Agent Playbook
 
-1. Detect available columns in source data (CSV/XLSX).
-2. Build `mapping.json` to map client fields into `bayestest` fields.
-3. Run `bayestest analyze-file ...`.
+1. Try `bayestest analyze --input ...` directly first.
+2. If the table is unusual, build `mapping.json` to translate source headers into `bayestest` fields.
+3. Run `bayestest analyze ...`.
 4. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
-5. If `action=continue_collecting_data`, schedule next look.
-6. If `action=investigate_data_quality`, resolve SRM/tracking before any ship decision.
-7. For planning questions ("how long should we run?"), run `bayestest duration`.
-8. For pasted stats messages, run `bayestest analyze-text` to convert free text into analysis.
-9. For spreadsheet planning assumptions, run `bayestest duration --input ... --mapping ...`.
-
-## Input schema
-
-Top-level fields:
-- `experiment_name` (str)
-- `method` (`"bayesian"` or `"frequentist_sequential"`)
-- `primary_metric` (`"conversion_rate"` or `"arpu"`)
-- `alpha` (float, default `0.05`)
-- `look_index` and `max_looks` (ints, sequential mode)
-- `information_fraction` (optional float in `(0, 1]`, overrides look/max_looks)
-- `variants` (list): exactly one row must include `"is_control": true`
-- `guardrails` (optional list)
-- `decision_thresholds` (optional):
-  - `bayes_prob_beats_control` (default `0.95`)
-  - `max_expected_loss` (default `0.001`)
-- `samples` (default `50000`, Bayesian mode)
-- `random_seed` (default `7`)
-
-Variant row:
-
-```json
-{
-  "name": "control",
-  "visitors": 100000,
-  "conversions": 4000,
-  "is_control": true
-}
-```
-
-For `primary_metric: "arpu"`, each variant also needs:
-- `revenue_sum`
-- `revenue_sum_squares`
-
-## Mapping-based ingestion (CSV/XLSX)
-
-Generate mapping template:
-
-```bash
-uv run bayestest example-mapping > mapping.json
-```
-
-Or use existing examples in `examples/`:
-- `mapping_arpu_bayes.json` - for ARPU analysis
-- `mapping_conversion_bayes.json` - for conversion rate analysis
-- `duration_mapping.json` - for duration estimation
-
-Mapping keys:
-- `columns.variant`, `columns.visitors`, `columns.conversions`
-- optional `columns.is_control`
-- optional `columns.revenue_sum`, `columns.revenue_sum_squares`
-- control detection fallback: `control.column` + `control.value`
-
-This lets agents reshape arbitrary business exports into a consistent contract.
-
-## Examples
-
-1. Bayesian conversion-rate A/B/n:
-
-```json
-{
-  "experiment_name": "homepage_cta",
-  "method": "bayesian",
-  "primary_metric": "conversion_rate",
-  "variants": [
-    {"name": "control", "visitors": 50000, "conversions": 2000, "is_control": true},
-    {"name": "v1", "visitors": 50000, "conversions": 2080, "is_control": false},
-    {"name": "v2", "visitors": 50000, "conversions": 2140, "is_control": false}
-  ]
-}
-```
-
-2. Bayesian ARPU probability-to-win:
-
-```json
-{
-  "experiment_name": "pricing_page",
-  "method": "bayesian",
-  "primary_metric": "arpu",
-  "variants": [
-    {"name": "control", "visitors": 10000, "conversions": 550, "revenue_sum": 22000, "revenue_sum_squares": 150000, "is_control": true},
-    {"name": "v1", "visitors": 10000, "conversions": 570, "revenue_sum": 23500, "revenue_sum_squares": 170000, "is_control": false}
-  ]
-}
-```
-
-3. Sequential ARPU (early look):
-
-```json
-{
-  "experiment_name": "checkout_flow",
-  "method": "frequentist_sequential",
-  "primary_metric": "arpu",
-  "alpha": 0.05,
-  "look_index": 3,
-  "max_looks": 10,
-  "variants": [
-    {"name": "control", "visitors": 12000, "conversions": 610, "revenue_sum": 21000, "revenue_sum_squares": 150000, "is_control": true},
-    {"name": "v1", "visitors": 12000, "conversions": 640, "revenue_sum": 22400, "revenue_sum_squares": 167000, "is_control": false}
-  ]
-}
-```
+5. If `action=continue_collecting_data`, schedule the next look.
+6. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
+7. For planning questions, run `bayestest duration`.
+8. For pasted stats messages, run `bayestest analyze-text`.
 
 ## Input validation errors
 
@@ -241,7 +472,7 @@ Common errors and fixes:
 - `Exactly one variant must have is_control=true`:
   mark one and only one control row.
 - `conversions cannot exceed visitors`:
-  fix aggregation query or mapped columns.
+  fix aggregation query or mapped columns. This often means the metric is a repeated-event count rather than a binary outcome.
 - `ARPU requires revenue_sum and revenue_sum_squares`:
   include both revenue aggregate columns.
 - `primary_metric must be 'conversion_rate' or 'arpu'`:
@@ -255,6 +486,8 @@ Common errors and fixes:
 - `decision_confidence` (0 to 1)
 - `next_best_action`
 - `risk_flags` (e.g. `srm_detected`, `guardrail_failure`)
+
+If no explicit Bayesian decision policy is provided, `recommendation` is `null` and `analysis_settings.decision_policy` shows that no automated decision policy was applied.
 
 ## Notes
 
