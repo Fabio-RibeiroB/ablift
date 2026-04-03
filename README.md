@@ -1,6 +1,6 @@
 # ablift
 
-`ablift` is an agent-friendly Python package and CLI for A/B/n decisions.
+`ablift` is an agent-friendly CLI for A/B/n decisions.
 
 > Early release (alpha): this project is work in progress and not production-hardened yet.
 
@@ -355,11 +355,11 @@ Precedence is:
 - built-in defaults
 
 Bundled examples:
-- [examples/conversion_multivariant.csv](/home/fabio/Documents/GitHub/bayestest/examples/conversion_multivariant.csv)
-- [examples/mapping_conversion_bayes.json](/home/fabio/Documents/GitHub/bayestest/examples/mapping_conversion_bayes.json)
-- [examples/arpu_bayesian.csv](/home/fabio/Documents/GitHub/bayestest/examples/arpu_bayesian.csv)
-- [examples/mapping_arpu_bayes.json](/home/fabio/Documents/GitHub/bayestest/examples/mapping_arpu_bayes.json)
-- [examples/duration_mapping.json](/home/fabio/Documents/GitHub/bayestest/examples/duration_mapping.json)
+- [examples/conversion_multivariant.csv](examples/conversion_multivariant.csv)
+- [examples/mapping_conversion_bayes.json](examples/mapping_conversion_bayes.json)
+- [examples/arpu_bayesian.csv](examples/arpu_bayesian.csv)
+- [examples/mapping_arpu_bayes.json](examples/mapping_arpu_bayes.json)
+- [examples/duration_mapping.json](examples/duration_mapping.json)
 
 ## More examples
 
