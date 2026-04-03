@@ -6,6 +6,15 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "variant": ("variant", "variant_name", "group", "arm", "treatment", "bucket", "cohort", "experience"),
+    "visitors": ("visitors", "users", "sessions", "visits", "exposures", "trials", "n"),
+    "conversions": ("conversions", "orders", "purchases", "signups", "successes", "click_sessions", "clicks"),
+    "is_control": ("is_control", "control", "is_baseline"),
+    "revenue_sum": ("revenue_sum", "sum_revenue", "gross_revenue_sum"),
+    "revenue_sum_squares": ("revenue_sum_squares", "sum_revenue_squares", "revenue_ss", "revenue_sq_sum"),
+}
+
 
 def read_table(path: str, sheet: str | None = None) -> list[dict[str, Any]]:
     p = Path(path)
@@ -56,21 +65,96 @@ def _to_bool(value: Any) -> bool:
     return text in {"1", "true", "yes", "y", "control"}
 
 
+def _normalize_header(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "_")
+
+
+def infer_columns(rows: list[dict[str, Any]], primary_metric: str = "conversion_rate") -> dict[str, str]:
+    if not rows:
+        raise ValueError("Input table is empty.")
+
+    headers = {str(key): _normalize_header(key) for key in rows[0].keys()}
+    inferred: dict[str, str] = {}
+
+    for field in ("variant", "visitors", "conversions", "is_control", "revenue_sum", "revenue_sum_squares"):
+        if field in {"revenue_sum", "revenue_sum_squares"} and primary_metric != "arpu":
+            continue
+        for original, normalized in headers.items():
+            if normalized in COLUMN_ALIASES[field]:
+                inferred[field] = original
+                break
+
+    return inferred
+
+
+def detect_primary_metric(rows: list[dict[str, Any]], mapping: dict[str, Any] | None = None) -> str:
+    if mapping and mapping.get("primary_metric"):
+        return str(mapping["primary_metric"])
+
+    inferred = infer_columns(rows, primary_metric="arpu")
+    if "revenue_sum" in inferred and "revenue_sum_squares" in inferred:
+        return "arpu"
+    return "conversion_rate"
+
+
+def merge_analysis_config(
+    *,
+    mapping: dict[str, Any] | None,
+    defaults: dict[str, Any] | None,
+) -> dict[str, Any]:
+    config = dict(mapping or {})
+    for key, value in (defaults or {}).items():
+        if value is not None:
+            config[key] = value
+    return config
+
+
+def _require_column(rows: list[dict[str, Any]], column_name: str, semantic_name: str) -> None:
+    if rows and column_name not in rows[0]:
+        aliases = ", ".join(COLUMN_ALIASES.get(semantic_name, ()))
+        raise ValueError(
+            f"Could not find a column for '{semantic_name}'. "
+            f"Pass a mapping file or rename the source column. Tried aliases: {aliases}."
+        )
+
+
 def build_payload_from_rows(
     rows: list[dict[str, Any]],
-    mapping: dict[str, Any],
+    mapping: dict[str, Any] | None = None,
+    defaults: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    columns = mapping.get("columns", {})
-    name_col = columns.get("variant", "variant")
-    visitors_col = columns.get("visitors", "visitors")
-    conversions_col = columns.get("conversions", "conversions")
+    config = merge_analysis_config(mapping=mapping, defaults=defaults)
+    primary_metric = str(config.get("primary_metric") or detect_primary_metric(rows, mapping)).strip().lower()
+    inferred_columns = infer_columns(rows, primary_metric=primary_metric)
+    columns = config.get("columns", {})
+    name_col = columns.get("variant") or inferred_columns.get("variant") or "variant"
+    visitors_col = columns.get("visitors") or inferred_columns.get("visitors") or "visitors"
+    conversions_col = columns.get("conversions") or inferred_columns.get("conversions") or "conversions"
     is_control_col = columns.get("is_control")
-    revenue_sum_col = columns.get("revenue_sum")
-    revenue_sum_sq_col = columns.get("revenue_sum_squares")
+    if not is_control_col:
+        is_control_col = inferred_columns.get("is_control")
+    revenue_sum_col = columns.get("revenue_sum") or inferred_columns.get("revenue_sum")
+    revenue_sum_sq_col = columns.get("revenue_sum_squares") or inferred_columns.get("revenue_sum_squares")
 
-    control_rule = mapping.get("control", {})
+    control_rule = config.get("control", {})
     control_col = control_rule.get("column")
     control_value = control_rule.get("value")
+
+    if not control_col and not is_control_col:
+        control_col = name_col
+        control_value = "control"
+
+    _require_column(rows, name_col, "variant")
+    _require_column(rows, visitors_col, "visitors")
+    _require_column(rows, conversions_col, "conversions")
+    if primary_metric == "arpu":
+        if not revenue_sum_col or not revenue_sum_sq_col:
+            raise ValueError(
+                "ARPU analysis requires revenue_sum and revenue_sum_squares columns. "
+                "Pass a mapping file or use matching source headers."
+            )
+        _require_column(rows, revenue_sum_col, "revenue_sum")
+        _require_column(rows, revenue_sum_sq_col, "revenue_sum_squares")
 
     variants: list[dict[str, Any]] = []
     for row in rows:
@@ -82,7 +166,7 @@ def build_payload_from_rows(
         if is_control_col:
             is_control = _to_bool(row.get(is_control_col))
         elif control_col is not None and control_value is not None:
-            is_control = str(row.get(control_col, "")).strip() == str(control_value)
+            is_control = str(row.get(control_col, "")).strip().lower() == str(control_value).strip().lower()
 
         variant_obj = {
             "name": variant_name,
@@ -99,17 +183,18 @@ def build_payload_from_rows(
         variants.append(variant_obj)
 
     payload = {
-        "experiment_name": mapping["experiment_name"],
-        "method": mapping["method"],
-        "primary_metric": mapping.get("primary_metric", "conversion_rate"),
-        "alpha": mapping.get("alpha", 0.05),
-        "look_index": mapping.get("look_index", 1),
-        "max_looks": mapping.get("max_looks", 1),
-        "information_fraction": mapping.get("information_fraction"),
-        "decision_thresholds": mapping.get("decision_thresholds", {}),
-        "guardrails": mapping.get("guardrails", []),
-        "samples": mapping.get("samples", 50000),
-        "random_seed": mapping.get("random_seed", 7),
+        "experiment_name": config.get("experiment_name", "table_input_experiment"),
+        "method": config.get("method", "bayesian"),
+        "primary_metric": primary_metric,
+        "alpha": config.get("alpha", 0.05),
+        "look_index": config.get("look_index", 1),
+        "max_looks": config.get("max_looks", 1),
+        "information_fraction": config.get("information_fraction"),
+        "decision_thresholds": config.get("decision_thresholds"),
+        "decision_policy": config.get("decision_policy"),
+        "guardrails": config.get("guardrails", []),
+        "samples": config.get("samples", 50000),
+        "random_seed": config.get("random_seed", 7),
         "variants": variants,
     }
 

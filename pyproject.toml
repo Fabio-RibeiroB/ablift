@@ -7,11 +7,12 @@ name = "bayestest"
 version = "0.3.0"
 description = "CLI and Python toolkit for Bayesian and sequential A/B/n decisions"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
   { name = "Fabio-RibeiroB", email = "bradyfr@proton.me" },
 ]
 dependencies = [
+  "click>=8.0",
   "numpy>=1.22",
   "openpyxl>=3.1.0",
 ]
@@ -24,7 +25,7 @@ test = [
 ]
 
 [project.scripts]
-bayestest = "bayestest.cli:main"
+bayestest = "bayestest.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -32,3 +33,11 @@ include = ["bayestest*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.bayestest]
+method = "bayesian"
+samples = 50000
+random_seed = 7
+
+[tool.bayestest.decision_policy]
+enabled = false

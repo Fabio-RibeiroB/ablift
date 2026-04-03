@@ -1,130 +1,77 @@
 from __future__ import annotations
 
-import argparse
 import importlib.metadata
 import json
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
+
+import click
 
 from .connectors import build_duration_request_from_rows, build_payload_from_rows, read_table
-from .engine import analyze, parse_payload
+from .engine import analyze as run_analysis, parse_payload
 from .planning import bayesian_duration_conversion, frequentist_duration_conversion
 from .reporting import build_markdown_report
 from .text_parser import parse_duration_prompt, parse_variant_lines
 
 
-def build_parser() -> argparse.ArgumentParser:
-    epilog = (
-        "Examples:\n"
-        "  bayestest analyze --input input.json --output output.json --report report.md\n"
-        "  bayestest analyze-file --input data.csv --mapping mapping.json\n"
-        "  bayestest analyze-file --input data.xlsx --mapping mapping.json --sheet Sheet1\n"
-        "  bayestest analyze-text --text \"Variant A: 100 conversions out of 2000 visitors\\n"
-        "Variant B: 125 conversions out of 2000 visitors\"\n"
-        "  bayestest duration --prompt-text \"Traffic: 50000 visitors/day\\nBaseline: 4%\\nMDE: 5%\\nLooks: 10\"\n"
-        "  bayestest duration --input duration_inputs.xlsx --mapping duration_mapping.json --sheet Sheet1\n"
-    )
-    parser = argparse.ArgumentParser(
-        prog="bayestest",
-        description=(
-            "Agent-friendly CLI for Bayesian and frequentist sequential A/B/n decisions."
-        ),
-        epilog=epilog,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
+def _write_text(path: str, content: str) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(content, encoding="utf-8")
 
-    sub = parser.add_subparsers(dest="command", required=True)
 
-    analyze_cmd = sub.add_parser(
-        "analyze",
-        help="Analyze one JSON experiment payload.",
-        description="Run Bayesian or frequentist sequential analysis from a structured JSON payload.",
-    )
-    analyze_cmd.add_argument("--input", required=True, help="Path to input JSON payload.")
-    analyze_cmd.add_argument(
-        "--output",
-        required=False,
-        help="Path to output JSON. If omitted, writes to stdout.",
-    )
-    analyze_cmd.add_argument(
-        "--report",
-        required=False,
-        help="Optional path to markdown report output.",
-    )
+def _emit_analysis(result, output_path: str | None, report_path: str | None) -> None:
+    result_json = json.dumps(result.to_dict(), indent=2)
+    if output_path:
+        _write_text(output_path, result_json + "\n")
+    else:
+        click.echo(result_json)
+    if report_path:
+        _write_text(report_path, build_markdown_report(result))
 
-    sub.add_parser("example-input", help="Print an example input JSON to stdout.")
-    sub.add_parser("example-mapping", help="Print an example mapping JSON for CSV/XLSX.")
-    sub.add_parser("example-duration-prompt", help="Print a duration prompt text example.")
-    sub.add_parser("example-duration-mapping", help="Print a duration mapping JSON for CSV/XLSX.")
 
-    analyze_file_cmd = sub.add_parser(
-        "analyze-file",
-        help="Analyze CSV/XLSX using a mapping file.",
-        description="Use mapping JSON to normalize arbitrary CSV/XLSX columns into the bayestest contract.",
-    )
-    analyze_file_cmd.add_argument("--input", required=True, help="Path to CSV/XLSX.")
-    analyze_file_cmd.add_argument("--mapping", required=True, help="Path to mapping JSON.")
-    analyze_file_cmd.add_argument("--sheet", required=False, help="Excel sheet name.")
-    analyze_file_cmd.add_argument(
-        "--output",
-        required=False,
-        help="Path to output JSON. If omitted, writes to stdout.",
-    )
-    analyze_file_cmd.add_argument(
-        "--report",
-        required=False,
-        help="Optional path to markdown report output.",
-    )
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        elif value is not None:
+            merged[key] = value
+    return merged
 
-    analyze_text_cmd = sub.add_parser(
-        "analyze-text",
-        help="Parse pasted variant lines and analyze.",
-        description="Conversation mode: parse plain-text variant stats and run analysis.",
-    )
-    analyze_text_cmd.add_argument("--text", required=False, help="Raw pasted text.")
-    analyze_text_cmd.add_argument("--text-file", required=False, help="Path to pasted text file.")
-    analyze_text_cmd.add_argument("--experiment-name", default="text_input_experiment")
-    analyze_text_cmd.add_argument("--method", default="bayesian")
-    analyze_text_cmd.add_argument("--primary-metric", default="conversion_rate")
-    analyze_text_cmd.add_argument("--output", required=False)
-    analyze_text_cmd.add_argument("--report", required=False)
 
-    duration_cmd = sub.add_parser(
-        "duration",
-        help="Estimate test duration from assumptions.",
-        description=(
-            "Estimate experiment runtime from assumptions.\n"
-            "Supports direct args, --prompt-text, and CSV/XLSX + mapping."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    duration_cmd.add_argument("--method", choices=["frequentist", "bayesian"], required=False)
-    duration_cmd.add_argument("--baseline-rate", type=float, required=False, help="Baseline conversion rate, decimal (e.g. 0.04)")
-    duration_cmd.add_argument("--relative-mde", type=float, required=False, help="Relative MDE, decimal (e.g. 0.05 for +5%%)")
-    duration_cmd.add_argument("--daily-traffic", type=int, required=False, help="Total daily traffic across variants")
-    duration_cmd.add_argument("--n-variants", type=int, default=2)
-    duration_cmd.add_argument("--alpha", type=float, default=0.05)
-    duration_cmd.add_argument("--power", type=float, default=0.8)
-    duration_cmd.add_argument("--max-looks", type=int, default=10)
-    duration_cmd.add_argument("--prob-threshold", type=float, default=0.95)
-    duration_cmd.add_argument("--max-expected-loss", type=float, default=0.001)
-    duration_cmd.add_argument("--assurance-target", type=float, default=0.8)
-    duration_cmd.add_argument("--max-days", type=int, default=60)
-    duration_cmd.add_argument("--output", required=False)
-    duration_cmd.add_argument("--prompt-text", required=False, help="Natural-language assumptions text")
-    duration_cmd.add_argument("--input", required=False, help="CSV/XLSX input for duration assumptions")
-    duration_cmd.add_argument("--mapping", required=False, help="JSON mapping for duration table columns")
-    duration_cmd.add_argument("--sheet", required=False, help="Excel sheet name for duration input")
+def _load_project_config() -> dict[str, Any]:
+    pyproject_path = Path.cwd() / "pyproject.toml"
+    if not pyproject_path.exists():
+        return {}
+    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    return data.get("tool", {}).get("bayestest", {})
 
-    doctor_cmd = sub.add_parser(
-        "doctor",
-        help="Run environment and dependency checks for agents/CI.",
-        description="Check Python version, required dependencies, and CLI readiness.",
-    )
-    doctor_cmd.add_argument("--strict", action="store_true", help="Exit non-zero if any check fails.")
-    doctor_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON output.")
 
-    return parser
+def _load_analysis_payload(
+    *,
+    input_path: str,
+    mapping_path: str | None,
+    sheet: str | None,
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    config_payload = _load_project_config()
+    suffix = Path(input_path).suffix.lower()
+    if suffix == ".json":
+        input_payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        return _deep_merge(config_payload, _deep_merge(input_payload, defaults))
+
+    if suffix not in {".csv", ".xlsx", ".xlsm"}:
+        raise click.ClickException("Unsupported analysis input. Use .json, .csv, .xlsx, or .xlsm.")
+
+    mapping = None
+    if mapping_path:
+        mapping = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
+    rows = read_table(input_path, sheet=sheet)
+    table_defaults = _deep_merge(config_payload, defaults)
+    return build_payload_from_rows(rows, mapping=mapping, defaults=table_defaults)
 
 
 def example_payload() -> dict:
@@ -184,15 +131,15 @@ def example_mapping() -> dict:
         "max_looks": 10,
         "columns": {
             "variant": "variant_name",
-            "visitors": "users",
-            "conversions": "orders",
+            "visitors": "sessions",
+            "conversions": "click_sessions",
             "is_control": "is_control",
             "revenue_sum": "revenue_sum",
-            "revenue_sum_squares": "revenue_sum_squares"
+            "revenue_sum_squares": "revenue_sum_squares",
         },
         "control": {
             "column": "variant_name",
-            "value": "control"
+            "value": "control",
         },
         "guardrails": [
             {
@@ -200,15 +147,15 @@ def example_mapping() -> dict:
                 "control": 420.0,
                 "treatment": 430.0,
                 "direction": "decrease",
-                "max_relative_change": 0.05
+                "max_relative_change": 0.05,
             }
         ],
         "decision_thresholds": {
             "bayes_prob_beats_control": 0.95,
-            "max_expected_loss": 0.001
+            "max_expected_loss": 0.001,
         },
         "samples": 50000,
-        "random_seed": 7
+        "random_seed": 7,
     }
 
 
@@ -243,22 +190,17 @@ def example_duration_mapping() -> dict:
         },
     }
 
-def _write_text(path: str, content: str) -> None:
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(content, encoding="utf-8")
-
 
 def run_doctor() -> dict:
     checks = []
 
-    py_ok = sys.version_info >= (3, 9)
+    py_ok = sys.version_info >= (3, 11)
     checks.append(
         {
             "name": "python_version",
             "passed": py_ok,
             "detail": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-            "required": ">=3.9",
+            "required": ">=3.11",
         }
     )
 
@@ -287,167 +229,306 @@ def run_doctor() -> dict:
     return {"ok": all_passed, "checks": checks}
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+@click.group()
+@click.version_option(package_name="bayestest", prog_name="bayestest")
+def cli() -> None:
+    """Agent-friendly CLI for Bayesian and frequentist sequential A/B/n decisions."""
 
-    if args.command == "example-input":
-        print(json.dumps(example_payload(), indent=2))
-        return 0
-    if args.command == "example-mapping":
-        print(json.dumps(example_mapping(), indent=2))
-        return 0
-    if args.command == "example-duration-prompt":
-        print(example_duration_prompt())
-        return 0
-    if args.command == "example-duration-mapping":
-        print(json.dumps(example_duration_mapping(), indent=2))
-        return 0
 
-    if args.command == "analyze-text":
-        text = args.text
-        if not text and args.text_file:
-            text = Path(args.text_file).read_text(encoding="utf-8")
-        if not text:
-            raise ValueError("Provide --text or --text-file.")
-        variants = parse_variant_lines(text)
-        payload = {
-            "experiment_name": args.experiment_name,
-            "method": args.method,
-            "primary_metric": args.primary_metric,
-            "variants": variants,
+@cli.command()
+@click.option("--input", "input_path", required=True, type=click.Path(exists=True), help="Path to input .json, .csv, .xlsx, or .xlsm.")
+@click.option("--mapping", "mapping_path", required=False, type=click.Path(exists=True), help="Optional JSON mapping for CSV/XLSX column names.")
+@click.option("--sheet", required=False, default=None, help="Excel sheet name for .xlsx/.xlsm input.")
+@click.option("--experiment-name", required=False, default=None, help="Optional experiment name override for CSV/XLSX input.")
+@click.option("--method", type=click.Choice(["bayesian", "frequentist_sequential"]), default=None, help="Optional method override for CSV/XLSX input.")
+@click.option("--primary-metric", type=click.Choice(["conversion_rate", "arpu"]), default=None, help="Optional metric override for CSV/XLSX input.")
+@click.option("--enable-recommendation/--no-recommendation", default=None, help="Enable or disable automated recommendation output.")
+@click.option("--prob-threshold", type=float, default=None, help="Bayesian probability-to-win threshold for recommendations.")
+@click.option("--max-expected-loss", type=float, default=None, help="Bayesian expected-loss threshold for recommendations.")
+@click.option("--alpha", type=float, default=None, help="Optional alpha override.")
+@click.option("--look-index", type=int, default=None, help="Optional sequential look index override.")
+@click.option("--max-looks", type=int, default=None, help="Optional sequential max looks override.")
+@click.option("--information-fraction", type=float, default=None, help="Optional sequential information fraction override.")
+@click.option("--samples", type=int, default=None, help="Optional Bayesian posterior sample count override.")
+@click.option("--random-seed", type=int, default=None, help="Optional Bayesian random seed override.")
+@click.option("--output", "output_path", required=False, type=click.Path(), help="Path to output JSON. If omitted, writes to stdout.")
+@click.option("--report", "report_path", required=False, type=click.Path(), help="Optional path to markdown report output.")
+def analyze(
+    input_path: str,
+    mapping_path: str | None,
+    sheet: str | None,
+    experiment_name: str | None,
+    method: str | None,
+    primary_metric: str | None,
+    enable_recommendation: bool | None,
+    prob_threshold: float | None,
+    max_expected_loss: float | None,
+    alpha: float | None,
+    look_index: int | None,
+    max_looks: int | None,
+    information_fraction: float | None,
+    samples: int | None,
+    random_seed: int | None,
+    output_path: str | None,
+    report_path: str | None,
+) -> None:
+    """Analyze JSON, CSV, or XLSX experiment input."""
+    decision_policy = None
+    if enable_recommendation is not None or prob_threshold is not None or max_expected_loss is not None:
+        decision_policy = {
+            "enabled": True if enable_recommendation is None else enable_recommendation,
+            "bayes_prob_beats_control": prob_threshold,
+            "max_expected_loss": max_expected_loss,
         }
-        analysis_input = parse_payload(payload)
-        result = analyze(analysis_input)
-        result_json = json.dumps(result.to_dict(), indent=2)
-        if args.output:
-            _write_text(args.output, result_json + "\n")
-        else:
-            print(result_json)
-        if args.report:
-            _write_text(args.report, build_markdown_report(result))
-        return 0
 
-    if args.command == "duration":
-        method = args.method
-        baseline_rate = args.baseline_rate
-        relative_mde = args.relative_mde
-        daily_traffic = args.daily_traffic
+    defaults = {
+        "experiment_name": experiment_name,
+        "method": method,
+        "primary_metric": primary_metric,
+        "decision_policy": decision_policy,
+        "alpha": alpha,
+        "look_index": look_index,
+        "max_looks": max_looks,
+        "information_fraction": information_fraction,
+        "samples": samples,
+        "random_seed": random_seed,
+    }
+    input_payload = _load_analysis_payload(
+        input_path=input_path,
+        mapping_path=mapping_path,
+        sheet=sheet,
+        defaults=defaults,
+    )
+    if Path(input_path).suffix.lower() in {".csv", ".xlsx", ".xlsm"} and input_payload.get("experiment_name") in {None, "", "table_input_experiment"}:
+        input_payload["experiment_name"] = Path(input_path).stem
+    _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
 
-        if args.input and args.mapping:
-            rows = read_table(args.input, sheet=args.sheet)
-            duration_mapping = json.loads(Path(args.mapping).read_text(encoding="utf-8"))
-            file_req = build_duration_request_from_rows(rows, duration_mapping)
-            method = method or file_req["method"]
-            baseline_rate = baseline_rate if baseline_rate is not None else file_req["baseline_rate"]
-            relative_mde = relative_mde if relative_mde is not None else file_req["relative_mde"]
-            daily_traffic = daily_traffic if daily_traffic is not None else file_req["daily_traffic"]
-            args.n_variants = file_req["n_variants"]
-            args.alpha = file_req["alpha"]
-            args.power = file_req["power"]
-            args.max_looks = file_req["max_looks"]
-            args.prob_threshold = file_req["prob_threshold"]
-            args.max_expected_loss = file_req["max_expected_loss"]
-            args.assurance_target = file_req["assurance_target"]
-            args.max_days = file_req["max_days"]
 
-        if args.prompt_text:
-            parsed = parse_duration_prompt(args.prompt_text)
-            method = method or "frequentist"
-            baseline_rate = baseline_rate if baseline_rate is not None else parsed["baseline_rate"]
-            relative_mde = relative_mde if relative_mde is not None else parsed["relative_mde"]
-            daily_traffic = daily_traffic if daily_traffic is not None else parsed["daily_total_traffic"]
-            args.alpha = args.alpha if args.alpha is not None else parsed["alpha"]
-            args.power = args.power if args.power is not None else parsed["power"]
-            args.n_variants = args.n_variants if args.n_variants is not None else parsed["n_variants"]
-            args.max_looks = args.max_looks if args.max_looks is not None else parsed["max_looks"]
+@cli.command("analyze-file", hidden=True)
+@click.option("--input", "input_path", required=True, type=click.Path(exists=True), help="Path to CSV/XLSX.")
+@click.option("--mapping", "mapping_path", required=False, type=click.Path(exists=True), help="Optional JSON mapping for CSV/XLSX column names.")
+@click.option("--sheet", required=False, default=None, help="Excel sheet name.")
+@click.option("--experiment-name", required=False, default=None, help="Optional experiment name override.")
+@click.option("--method", type=click.Choice(["bayesian", "frequentist_sequential"]), default=None, help="Optional method override.")
+@click.option("--primary-metric", type=click.Choice(["conversion_rate", "arpu"]), default=None, help="Optional metric override.")
+@click.option("--output", "output_path", required=False, type=click.Path(), help="Path to output JSON. If omitted, writes to stdout.")
+@click.option("--report", "report_path", required=False, type=click.Path(), help="Optional path to markdown report output.")
+def analyze_file(
+    input_path: str,
+    mapping_path: str | None,
+    sheet: str | None,
+    experiment_name: str | None,
+    method: str | None,
+    primary_metric: str | None,
+    output_path: str | None,
+    report_path: str | None,
+) -> None:
+    """Deprecated alias for analyze on CSV/XLSX input."""
+    click.echo("Warning: 'analyze-file' is deprecated; use 'analyze --input ...' instead.", err=True)
+    input_payload = _load_analysis_payload(
+        input_path=input_path,
+        mapping_path=mapping_path,
+        sheet=sheet,
+        defaults={
+            "experiment_name": experiment_name,
+            "method": method,
+            "primary_metric": primary_metric,
+        },
+    )
+    if input_payload.get("experiment_name") in {None, "", "table_input_experiment"}:
+        input_payload["experiment_name"] = Path(input_path).stem
+    _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
 
-        if not method:
-            method = input("Method (frequentist/bayesian): ").strip().lower()
-        if baseline_rate is None:
-            baseline_rate = float(input("Baseline conversion rate (decimal, e.g. 0.04): ").strip())
-        if relative_mde is None:
-            relative_mde = float(input("Relative MDE (decimal, e.g. 0.05): ").strip())
-        if daily_traffic is None:
-            daily_traffic = int(input("Total daily traffic: ").strip())
 
-        if method == "frequentist":
-            plan = frequentist_duration_conversion(
-                baseline_rate=baseline_rate,
-                relative_mde=relative_mde,
-                daily_total_traffic=daily_traffic,
-                n_variants=args.n_variants,
-                alpha=args.alpha,
-                power=args.power,
-                max_looks=args.max_looks,
-            )
-        else:
-            plan = bayesian_duration_conversion(
-                baseline_rate=baseline_rate,
-                relative_mde=relative_mde,
-                daily_total_traffic=daily_traffic,
-                n_variants=args.n_variants,
-                prob_threshold=args.prob_threshold,
-                max_expected_loss=args.max_expected_loss,
-                assurance_target=args.assurance_target,
-                max_days=args.max_days,
-            )
+@cli.command("analyze-text")
+@click.option("--text", required=False, default=None, help="Raw pasted text.")
+@click.option("--text-file", "text_file", required=False, type=click.Path(exists=True), help="Path to pasted text file.")
+@click.option("--experiment-name", default="text_input_experiment", show_default=True)
+@click.option("--method", default="bayesian", show_default=True)
+@click.option("--primary-metric", default="conversion_rate", show_default=True)
+@click.option("--output", "output_path", required=False, type=click.Path())
+@click.option("--report", "report_path", required=False, type=click.Path())
+def analyze_text(
+    text: str | None,
+    text_file: str | None,
+    experiment_name: str,
+    method: str,
+    primary_metric: str,
+    output_path: str | None,
+    report_path: str | None,
+) -> None:
+    """Parse pasted variant lines and analyze."""
+    if not text and text_file:
+        text = Path(text_file).read_text(encoding="utf-8")
+    if not text:
+        raise click.UsageError("Provide --text or --text-file.")
+    variants = parse_variant_lines(text)
+    payload = {
+        "experiment_name": experiment_name,
+        "method": method,
+        "primary_metric": primary_metric,
+        "variants": variants,
+    }
+    _emit_analysis(run_analysis(parse_payload(payload)), output_path, report_path)
 
-        plan_json = json.dumps(
-            {
-                "method": plan.method,
-                "estimated_days": plan.estimated_days,
-                "n_per_variant": plan.n_per_variant,
-                "assumptions": plan.assumptions,
-                "diagnostics": plan.diagnostics,
-            },
-            indent=2,
+
+@cli.command()
+@click.option("--method", type=click.Choice(["frequentist", "bayesian"]), default=None)
+@click.option("--baseline-rate", type=float, default=None, help="Baseline conversion rate, decimal (e.g. 0.04).")
+@click.option("--relative-mde", type=float, default=None, help="Relative MDE, decimal (e.g. 0.05 for +5%).")
+@click.option("--daily-traffic", type=int, default=None, help="Total daily traffic across variants.")
+@click.option("--n-variants", type=int, default=2, show_default=True)
+@click.option("--alpha", type=float, default=0.05, show_default=True)
+@click.option("--power", type=float, default=0.8, show_default=True)
+@click.option("--max-looks", type=int, default=10, show_default=True)
+@click.option("--prob-threshold", type=float, default=0.95, show_default=True)
+@click.option("--max-expected-loss", type=float, default=0.001, show_default=True)
+@click.option("--assurance-target", type=float, default=0.8, show_default=True)
+@click.option("--max-days", type=int, default=60, show_default=True)
+@click.option("--output", "output_path", required=False, type=click.Path())
+@click.option("--prompt-text", required=False, default=None, help="Natural-language assumptions text.")
+@click.option("--input", "input_path", required=False, type=click.Path(exists=True), help="CSV/XLSX input for duration assumptions.")
+@click.option("--mapping", "mapping_path", required=False, type=click.Path(exists=True), help="JSON mapping for duration table columns.")
+@click.option("--sheet", required=False, default=None, help="Excel sheet name for duration input.")
+def duration(
+    method: str | None,
+    baseline_rate: float | None,
+    relative_mde: float | None,
+    daily_traffic: int | None,
+    n_variants: int,
+    alpha: float,
+    power: float,
+    max_looks: int,
+    prob_threshold: float,
+    max_expected_loss: float,
+    assurance_target: float,
+    max_days: int,
+    output_path: str | None,
+    prompt_text: str | None,
+    input_path: str | None,
+    mapping_path: str | None,
+    sheet: str | None,
+) -> None:
+    """Estimate test duration from assumptions."""
+    if input_path and mapping_path:
+        rows = read_table(input_path, sheet=sheet)
+        duration_mapping = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
+        file_req = build_duration_request_from_rows(rows, duration_mapping)
+        method = method or file_req["method"]
+        baseline_rate = baseline_rate if baseline_rate is not None else file_req["baseline_rate"]
+        relative_mde = relative_mde if relative_mde is not None else file_req["relative_mde"]
+        daily_traffic = daily_traffic if daily_traffic is not None else file_req["daily_traffic"]
+        n_variants = file_req["n_variants"]
+        alpha = file_req["alpha"]
+        power = file_req["power"]
+        max_looks = file_req["max_looks"]
+        prob_threshold = file_req["prob_threshold"]
+        max_expected_loss = file_req["max_expected_loss"]
+        assurance_target = file_req["assurance_target"]
+        max_days = file_req["max_days"]
+
+    if prompt_text:
+        parsed = parse_duration_prompt(prompt_text)
+        method = method or "frequentist"
+        baseline_rate = baseline_rate if baseline_rate is not None else parsed["baseline_rate"]
+        relative_mde = relative_mde if relative_mde is not None else parsed["relative_mde"]
+        daily_traffic = daily_traffic if daily_traffic is not None else parsed["daily_total_traffic"]
+        alpha = alpha if alpha is not None else parsed["alpha"]
+        power = power if power is not None else parsed["power"]
+        n_variants = n_variants if n_variants is not None else parsed["n_variants"]
+        max_looks = max_looks if max_looks is not None else parsed["max_looks"]
+
+    if not method:
+        method = click.prompt("Method", type=click.Choice(["frequentist", "bayesian"]))
+    if baseline_rate is None:
+        baseline_rate = click.prompt("Baseline conversion rate (decimal, e.g. 0.04)", type=float)
+    if relative_mde is None:
+        relative_mde = click.prompt("Relative MDE (decimal, e.g. 0.05)", type=float)
+    if daily_traffic is None:
+        daily_traffic = click.prompt("Total daily traffic", type=int)
+
+    if method == "frequentist":
+        plan = frequentist_duration_conversion(
+            baseline_rate=baseline_rate,
+            relative_mde=relative_mde,
+            daily_total_traffic=daily_traffic,
+            n_variants=n_variants,
+            alpha=alpha,
+            power=power,
+            max_looks=max_looks,
         )
-        if args.output:
-            _write_text(args.output, plan_json + "\n")
-        else:
-            print(plan_json)
-        return 0
-
-    if args.command == "doctor":
-        result = run_doctor()
-        if args.json:
-            print(json.dumps(result, indent=2))
-        else:
-            status = "OK" if result["ok"] else "FAIL"
-            print(f"Doctor status: {status}")
-            for check in result["checks"]:
-                icon = "PASS" if check["passed"] else "FAIL"
-                print(
-                    f"- {icon} {check['name']}: {check['detail']} "
-                    f"(required {check['required']})"
-                )
-        if args.strict and not result["ok"]:
-            return 1
-        return 0
-
-    if args.command == "analyze-file":
-        mapping = json.loads(Path(args.mapping).read_text(encoding="utf-8"))
-        rows = read_table(args.input, sheet=args.sheet)
-        input_payload = build_payload_from_rows(rows, mapping)
     else:
-        input_payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+        plan = bayesian_duration_conversion(
+            baseline_rate=baseline_rate,
+            relative_mde=relative_mde,
+            daily_total_traffic=daily_traffic,
+            n_variants=n_variants,
+            prob_threshold=prob_threshold,
+            max_expected_loss=max_expected_loss,
+            assurance_target=assurance_target,
+            max_days=max_days,
+        )
 
-    analysis_input = parse_payload(input_payload)
-    result = analyze(analysis_input)
-    result_json = json.dumps(result.to_dict(), indent=2)
-
-    if args.output:
-        _write_text(args.output, result_json + "\n")
+    plan_json = json.dumps(
+        {
+            "method": plan.method,
+            "estimated_days": plan.estimated_days,
+            "n_per_variant": plan.n_per_variant,
+            "assumptions": plan.assumptions,
+            "diagnostics": plan.diagnostics,
+        },
+        indent=2,
+    )
+    if output_path:
+        _write_text(output_path, plan_json + "\n")
     else:
-        print(result_json)
+        click.echo(plan_json)
 
-    if args.report:
-        report = build_markdown_report(result)
-        _write_text(args.report, report)
 
-    return 0
+@cli.command()
+@click.option("--strict", is_flag=True, help="Exit non-zero if any check fails.")
+@click.option("--json-output", "json_output", is_flag=True, help="Print machine-readable JSON output.")
+def doctor(strict: bool, json_output: bool) -> None:
+    """Run environment and dependency checks for agents/CI."""
+    result = run_doctor()
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+    else:
+        status = "OK" if result["ok"] else "FAIL"
+        click.echo(f"Doctor status: {status}")
+        for check in result["checks"]:
+            icon = "PASS" if check["passed"] else "FAIL"
+            click.echo(f"- {icon} {check['name']}: {check['detail']} (required {check['required']})")
+    if strict and not result["ok"]:
+        raise SystemExit(1)
+
+
+@cli.command("example-input")
+def example_input() -> None:
+    """Print an example input JSON to stdout."""
+    click.echo(json.dumps(example_payload(), indent=2))
+
+
+@cli.command("example-mapping")
+def example_mapping_cmd() -> None:
+    """Print an example mapping JSON for CSV/XLSX."""
+    click.echo(json.dumps(example_mapping(), indent=2))
+
+
+@cli.command("example-duration-prompt")
+def example_duration_prompt_cmd() -> None:
+    """Print a duration prompt text example."""
+    click.echo(example_duration_prompt(), nl=False)
+
+
+@cli.command("example-duration-mapping")
+def example_duration_mapping_cmd() -> None:
+    """Print a duration mapping JSON for CSV/XLSX."""
+    click.echo(json.dumps(example_duration_mapping(), indent=2))
+
+
+
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    cli()

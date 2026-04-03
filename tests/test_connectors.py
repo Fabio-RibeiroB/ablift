@@ -7,6 +7,7 @@ from openpyxl import Workbook
 from bayestest.connectors import (
     build_duration_request_from_rows,
     build_payload_from_rows,
+    detect_primary_metric,
     read_table,
 )
 
@@ -92,6 +93,30 @@ class ConnectorTests(unittest.TestCase):
         self.assertEqual(req["method"], "bayesian")
         self.assertEqual(req["n_variants"], 3)
         self.assertEqual(req["max_days"], 30)
+
+    def test_build_payload_without_mapping_uses_aliases(self):
+        rows = [
+            {"variant_name": "control", "sessions": "1000", "orders": "40"},
+            {"variant_name": "v1", "sessions": "1000", "orders": "45"},
+        ]
+
+        payload = build_payload_from_rows(rows)
+        self.assertEqual(payload["experiment_name"], "table_input_experiment")
+        self.assertEqual(payload["method"], "bayesian")
+        self.assertTrue(payload["variants"][0]["is_control"])
+        self.assertEqual(payload["variants"][1]["conversions"], 45)
+
+    def test_detect_primary_metric_from_revenue_columns(self):
+        rows = [
+            {
+                "variant_name": "control",
+                "users": "1000",
+                "orders": "40",
+                "revenue_sum": "5000",
+                "revenue_sum_squares": "40000",
+            }
+        ]
+        self.assertEqual(detect_primary_metric(rows), "arpu")
 
 
 if __name__ == "__main__":
