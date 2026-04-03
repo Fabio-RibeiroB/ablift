@@ -1,6 +1,6 @@
 import unittest
 
-from bayestest.cli import run_doctor
+from ablift.cli import run_doctor
 
 
 class DoctorTests(unittest.TestCase):

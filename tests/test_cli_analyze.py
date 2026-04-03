@@ -6,7 +6,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from bayestest.cli import cli
+from ablift.cli import cli
 
 
 class AnalyzeCliTests(unittest.TestCase):
@@ -78,11 +78,11 @@ class AnalyzeCliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             pyproject_path.write_text(
-                "[tool.bayestest]\n"
+                "[tool.ablift]\n"
                 'method = "bayesian"\n'
                 "samples = 10000\n"
                 "\n"
-                "[tool.bayestest.decision_policy]\n"
+                "[tool.ablift.decision_policy]\n"
                 "enabled = true\n"
                 "bayes_prob_beats_control = 0.8\n"
                 "max_expected_loss = 0.01\n",
@@ -107,7 +107,7 @@ class AnalyzeCliTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Examples:", result.output)
-        self.assertIn("bayestest analyze --input experiment.csv", result.output)
+        self.assertIn("ablift analyze --input experiment.csv", result.output)
         self.assertIn("--enable-recommendation --prob-threshold 0.9", result.output)
 
     def test_analyze_surfaces_actionable_column_error(self):

@@ -4,14 +4,14 @@ import unittest
 from scipy.stats import chi2
 from statsmodels.stats.proportion import proportions_ztest
 
-from bayestest.engine import (
+from ablift.engine import (
     analyze,
     evaluate_srm,
     mean_and_var_from_aggregates,
     parse_payload,
     two_proportion_test,
 )
-from bayestest.models import VariantInput
+from ablift.models import VariantInput
 
 
 class EngineTests(unittest.TestCase):

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from bayestest.connectors import (
+from ablift.connectors import (
     build_duration_request_from_rows,
     build_payload_from_rows,
     detect_primary_metric,

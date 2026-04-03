@@ -1,7 +1,7 @@
 import unittest
 
-from bayestest.planning import bayesian_duration_conversion, frequentist_duration_conversion
-from bayestest.text_parser import parse_duration_prompt, parse_variant_lines
+from ablift.planning import bayesian_duration_conversion, frequentist_duration_conversion
+from ablift.text_parser import parse_duration_prompt, parse_variant_lines
 
 
 class PlanningTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 # Agent Notes
 
 - Use `uv`.
-- Prefer `bayestest analyze --input ...`.
+- Prefer `ablift analyze --input ...`.
 - Keep Bayesian recommendations policy-driven.
-- Read `[tool.bayestest]` from `pyproject.toml`.
+- Read `[tool.ablift]` from `pyproject.toml`.

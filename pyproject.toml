@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bayestest"
+name = "ablift"
 version = "0.3.0"
-description = "CLI and Python toolkit for Bayesian and sequential A/B/n decisions"
+description = "Agent-friendly CLI for Bayesian and sequential A/B/n experiment decisions"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
@@ -26,14 +26,15 @@ test = [
 lint = [
   "pre-commit>=4.0",
   "ruff>=0.11",
+  "ty>=0.0.1a16",
 ]
 
 [project.scripts]
-bayestest = "bayestest.cli:cli"
+ablift = "ablift.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bayestest*"]
+include = ["ablift*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -41,14 +42,20 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
-[tool.bayestest]
+[tool.ty]
+
+[tool.ty.src]
+include = ["ablift"]
+
+[tool.ablift]
 method = "bayesian"
 samples = 50000
 random_seed = 7
 
-[tool.bayestest.decision_policy]
+[tool.ablift.decision_policy]
 enabled = false

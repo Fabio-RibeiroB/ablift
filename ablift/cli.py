@@ -18,18 +18,18 @@ from .text_parser import parse_duration_prompt, parse_variant_lines
 
 ANALYZE_EPILOG = """\b
 Examples:
-  bayestest analyze --input experiment.json
-  bayestest analyze --input experiment.csv
-  bayestest analyze --input experiment.xlsx --sheet Results
-  bayestest analyze --input experiment.csv --mapping mapping.json
-  bayestest analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
-  bayestest analyze --input experiment.json --report report.md
+  ablift analyze --input experiment.json
+  ablift analyze --input experiment.csv
+  ablift analyze --input experiment.xlsx --sheet Results
+  ablift analyze --input experiment.csv --mapping mapping.json
+  ablift analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
+  ablift analyze --input experiment.json --report report.md
 """
 
 ANALYZE_TEXT_EPILOG = """\b
 Examples:
-  bayestest analyze-text --text "control: 1000 visitors, 40 conversions; v1: 1000 visitors, 45 conversions"
-  bayestest analyze-text --text-file summary.txt --output result.json
+  ablift analyze-text --text "control: 1000 visitors, 40 conversions; v1: 1000 visitors, 45 conversions"
+  ablift analyze-text --text-file summary.txt --output result.json
 """
 
 
@@ -64,7 +64,7 @@ def _load_project_config() -> dict[str, Any]:
     if not pyproject_path.exists():
         return {}
     data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    return data.get("tool", {}).get("bayestest", {})
+    return data.get("tool", {}).get("ablift", {})
 
 
 def _load_analysis_payload(
@@ -255,7 +255,7 @@ def run_doctor() -> dict:
 
 
 @click.group()
-@click.version_option(package_name="bayestest", prog_name="bayestest")
+@click.version_option(package_name="ablift", prog_name="ablift")
 def cli() -> None:
     """Agent-friendly CLI for Bayesian and frequentist sequential A/B/n decisions."""
 

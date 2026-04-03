@@ -1,10 +1,10 @@
-# bayestest-cli Skill
+# ablift-cli Skill
 
 Use this skill when a user asks for Bayesian or sequential A/B/n analysis, recommendations, or experiment reporting.
 
 ## Purpose
 
-Run `bayestest` CLI to produce statistically grounded decisions for experiments using:
+Run `ablift` CLI to produce statistically grounded decisions for experiments using:
 - Bayesian (`method=bayesian`)
 - Frequentist sequential (`method=frequentist_sequential`)
 - Primary metric: `conversion_rate` or `arpu`
@@ -21,7 +21,7 @@ Use this skill if the user asks to:
 
 ## Preconditions
 
-Run from repo root: `/home/fabio/bayestest`.
+Run from the repo root.
 
 Environment setup:
 ```bash
@@ -31,8 +31,8 @@ uv pip install -e .
 ```
 
 Pre-run checklist for agents:
-- `bayestest doctor --strict` passes
-- Python is `>=3.9`
+- `ablift doctor --strict` passes
+- Python is `>=3.11`
 - Input has exactly one control variant
 - Variant rows include `name`, `visitors`, `conversions`
 - If `primary_metric=arpu`, include `revenue_sum` and `revenue_sum_squares`
@@ -42,35 +42,35 @@ Pre-run checklist for agents:
 
 1. JSON payload mode
 ```bash
-bayestest analyze --input input.json --output output.json --report report.md
+ablift analyze --input input.json --output output.json --report report.md
 ```
 
 2. CSV/XLSX mode with mapping
 ```bash
-bayestest analyze-file --input data.csv --mapping mapping.json --output output.json --report report.md
-bayestest analyze-file --input data.xlsx --mapping mapping.json --sheet Sheet1 --output output.json --report report.md
+ablift analyze --input data.csv --mapping mapping.json --output output.json --report report.md
+ablift analyze --input data.xlsx --mapping mapping.json --sheet Sheet1 --output output.json --report report.md
 ```
 
 3. Pasted-text quick analysis (conversation input)
 ```bash
-bayestest analyze-text --text \"Variant A: 100 conversions out of 2000 visitors\nVariant B: 125 conversions out of 2000 visitors\"
+ablift analyze-text --text \"Variant A: 100 conversions out of 2000 visitors\nVariant B: 125 conversions out of 2000 visitors\"
 ```
 
 4. Duration planning (conversation, CLI args, CSV, Excel)
 ```bash
-bayestest duration --prompt-text \"Traffic: 50000 visitors/day\nBaseline: 4%\nMDE: 5%\nLooks: 10\"
-bayestest duration --method frequentist --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3 --max-looks 10
-bayestest duration --method bayesian --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3 --max-days 60
-bayestest duration --input duration_inputs.csv --mapping duration_mapping.json
-bayestest duration --input duration_inputs.xlsx --mapping duration_mapping.json --sheet Sheet1
+ablift duration --prompt-text \"Traffic: 50000 visitors/day\nBaseline: 4%\nMDE: 5%\nLooks: 10\"
+ablift duration --method frequentist --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3 --max-looks 10
+ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3 --max-days 60
+ablift duration --input duration_inputs.csv --mapping duration_mapping.json
+ablift duration --input duration_inputs.xlsx --mapping duration_mapping.json --sheet Sheet1
 ```
 
 Generate templates:
 ```bash
-bayestest example-input
-bayestest example-mapping
-bayestest example-duration-mapping
-bayestest example-duration-prompt
+ablift example-input
+ablift example-mapping
+ablift example-duration-mapping
+ablift example-duration-prompt
 ```
 
 ## Required data contract

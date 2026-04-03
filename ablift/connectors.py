@@ -207,7 +207,7 @@ def build_payload_from_rows(
                 str(row.get(control_col, "")).strip().lower() == str(control_value).strip().lower()
             )
 
-        variant_obj = {
+        variant_obj: dict[str, str | int | float | None | bool] = {
             "name": variant_name,
             "visitors": _to_int(row.get(visitors_col), visitors_col),
             "conversions": _to_int(row.get(conversions_col), conversions_col),

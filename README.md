@@ -1,6 +1,6 @@
-# bayestest
+# ablift
 
-`bayestest` is an agent-friendly Python package and CLI for A/B/n decisions.
+`ablift` is an agent-friendly Python package and CLI for A/B/n decisions.
 
 > Early release (alpha): this project is work in progress and not production-hardened yet.
 
@@ -21,7 +21,7 @@ It supports:
 uv tool install .
 ```
 
-This installs `bayestest` as a normal CLI tool and exposes the `bayestest` command on your `PATH`.
+This installs `ablift` as a normal CLI tool and exposes the `ablift` command on your `PATH`.
 
 To work from the repo during development:
 
@@ -32,7 +32,7 @@ uv sync --group test
 Then run commands through the repo-managed environment:
 
 ```bash
-uv run bayestest --help
+uv run ablift --help
 ```
 
 If you want an editable install in an existing environment:
@@ -46,20 +46,20 @@ uv pip install -e .
 Show available commands:
 
 ```bash
-bayestest --help
-bayestest analyze --help
+ablift --help
+ablift analyze --help
 ```
 
 Generate a JSON input template:
 
 ```bash
-bayestest example-input > input.json
+ablift example-input > input.json
 ```
 
 Run a Bayesian analysis from JSON:
 
 ```bash
-bayestest analyze \
+ablift analyze \
   --input input.json \
   --output output.json \
   --report report.md
@@ -68,7 +68,7 @@ bayestest analyze \
 Run the same workflow from a CSV file with inferred columns:
 
 ```bash
-bayestest analyze \
+ablift analyze \
   --input examples/conversion_multivariant.csv \
   --output output.json \
   --report report.md
@@ -77,13 +77,13 @@ bayestest analyze \
 Run with an explicit Bayesian decision policy:
 
 ```bash
-bayestest analyze --input bayesian_input.csv
+ablift analyze --input bayesian_input.csv
 ```
 
 Run from CSV/XLSX with an explicit mapping file when the source headers are unusual:
 
 ```bash
-bayestest analyze \
+ablift analyze \
   --input examples/conversion_multivariant.csv \
   --mapping examples/mapping_conversion_bayes.json \
   --output output.json \
@@ -93,7 +93,7 @@ bayestest analyze \
 If you are developing from the repo, use the same commands prefixed with `uv run`:
 
 ```bash
-uv run bayestest analyze \
+uv run ablift analyze \
   --input input.json \
   --output output.json \
   --report report.md
@@ -101,12 +101,12 @@ uv run bayestest analyze \
 
 ## Command summary
 
-- `bayestest analyze`: analyze `.json`, `.csv`, `.xlsx`, or `.xlsm` input
-- `bayestest analyze-text`: parse pasted stats text into an analysis payload
-- `bayestest duration`: estimate runtime needed for a test
-- `bayestest doctor`: verify the environment and required dependencies
-- `bayestest example-input`: print a starter JSON payload
-- `bayestest example-mapping`: print a starter mapping file
+- `ablift analyze`: analyze `.json`, `.csv`, `.xlsx`, or `.xlsm` input
+- `ablift analyze-text`: parse pasted stats text into an analysis payload
+- `ablift duration`: estimate runtime needed for a test
+- `ablift doctor`: verify the environment and required dependencies
+- `ablift example-input`: print a starter JSON payload
+- `ablift example-mapping`: print a starter mapping file
 
 ## Choosing the metric model
 
@@ -140,11 +140,11 @@ In those cases, either:
 
 The input contract is strict about semantics, not source column names.
 
-`bayestest` separates:
+`ablift` separates:
 - inference settings: priors, posterior sample count, random seed
 - decision policy: thresholds used to turn estimates into actions
 
-For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `bayestest` reports the posterior estimates but leaves `recommendation` as `null`.
+For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `ablift` reports the posterior estimates but leaves `recommendation` as `null`.
 
 For CSV/XLSX input, the JSON output also includes `analysis_settings.input_interpretation` so agents can see:
 - whether a mapping file was used
@@ -168,7 +168,7 @@ Bayesian defaults:
 - conversion-rate prior is `Beta(1, 1)`
 - ARPU prior is a weak `Normal-Inverse-Gamma` prior with `mu0=0`, `kappa0=1e-6`, `alpha0=1`, `beta0=1`
 
-Bayesian recommendations require an explicit decision policy, either in the input payload, via `[tool.bayestest]` in `pyproject.toml`, or via CLI flags such as:
+Bayesian recommendations require an explicit decision policy, either in the input payload, via `[tool.ablift]` in `pyproject.toml`, or via CLI flags such as:
 - `--enable-recommendation`
 - `--prob-threshold`
 - `--max-expected-loss`
@@ -259,7 +259,7 @@ Bayesian ARPU probability-to-win example:
 
 ## CSV/XLSX input
 
-For tabular input, `bayestest analyze` tries to work out of the box.
+For tabular input, `ablift analyze` tries to work out of the box.
 
 It can infer common headers such as:
 - variant: `variant`, `variant_name`, `group`, `arm`, `treatment`
@@ -267,7 +267,7 @@ It can infer common headers such as:
 - success count: `conversions`, `orders`, `purchases`, `signups`, `click_sessions`
 - control flag: `is_control`, `control`
 
-If there is no explicit control column, `bayestest` also treats a variant named `control` as the control row.
+If there is no explicit control column, `ablift` also treats a variant named `control` as the control row.
 
 ### What mapping means
 
@@ -281,7 +281,7 @@ You only need a mapping when:
 Generate a mapping template:
 
 ```bash
-bayestest example-mapping > mapping.json
+ablift example-mapping > mapping.json
 ```
 
 Use `analyze` with `--mapping` when your source data uses business-specific column names that cannot be inferred reliably.
@@ -320,7 +320,7 @@ Matching mapping file:
 Run it:
 
 ```bash
-bayestest analyze \
+ablift analyze \
   --input input.csv \
   --mapping mapping.json
 ```
@@ -331,18 +331,18 @@ The same structure works for `.xlsx` and `.xlsm`. Use `--sheet` to select a work
 
 ### Reusable project config
 
-Use `[tool.bayestest]` in `pyproject.toml` when you want one decision policy and one set of Bayesian inference settings reused across analyses in the project.
+Use `[tool.ablift]` in `pyproject.toml` when you want one decision policy and one set of Bayesian inference settings reused across analyses in the project.
 
 Example:
 
 ```toml
-[tool.bayestest]
+[tool.ablift]
 method = "bayesian"
 primary_metric = "conversion_rate"
 samples = 50000
 random_seed = 7
 
-[tool.bayestest.decision_policy]
+[tool.ablift.decision_policy]
 enabled = true
 bayes_prob_beats_control = 0.95
 max_expected_loss = 0.001
@@ -351,7 +351,7 @@ max_expected_loss = 0.001
 Precedence is:
 - CLI flags
 - input file
-- `pyproject.toml` `[tool.bayestest]`
+- `pyproject.toml` `[tool.ablift]`
 - built-in defaults
 
 Bundled examples:
@@ -398,7 +398,7 @@ Sequential ARPU at an early look:
 Run the CLI from the repo:
 
 ```bash
-uv run bayestest --help
+uv run ablift --help
 ```
 
 Run the test suite:
@@ -416,15 +416,15 @@ make demo
 Check environment readiness:
 
 ```bash
-uv run bayestest doctor
-uv run bayestest doctor --json
-uv run bayestest doctor --strict
+uv run ablift doctor
+uv run ablift doctor --json
+uv run ablift doctor --strict
 ```
 
 Estimate duration from assumptions:
 
 ```bash
-uv run bayestest duration \
+uv run ablift duration \
   --method frequentist \
   --baseline-rate 0.04 \
   --relative-mde 0.05 \
@@ -436,7 +436,7 @@ uv run bayestest duration \
 Estimate Bayesian duration:
 
 ```bash
-uv run bayestest duration \
+uv run ablift duration \
   --method bayesian \
   --baseline-rate 0.04 \
   --relative-mde 0.05 \
@@ -448,7 +448,7 @@ uv run bayestest duration \
 Analyze pasted stats text:
 
 ```bash
-uv run bayestest analyze-text \
+uv run ablift analyze-text \
   --text "Variant A: 100 conversions out of 2000 visitors\nVariant B: 125 conversions out of 2000 visitors" \
   --experiment-name pasted_example
 ```
@@ -456,7 +456,7 @@ uv run bayestest analyze-text \
 Estimate duration from CSV/XLSX:
 
 ```bash
-uv run bayestest duration \
+uv run ablift duration \
   --input examples/duration_inputs.xlsx \
   --mapping examples/duration_mapping.json \
   --sheet Sheet1
@@ -464,14 +464,14 @@ uv run bayestest duration \
 
 ## Agent Playbook
 
-1. Try `bayestest analyze --input ...` directly first.
-2. If the table is unusual, build `mapping.json` to translate source headers into `bayestest` fields.
-3. Run `bayestest analyze ...`.
+1. Try `ablift analyze --input ...` directly first.
+2. If the table is unusual, build `mapping.json` to translate source headers into `ablift` fields.
+3. Run `ablift analyze ...`.
 4. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
 5. If `action=continue_collecting_data`, schedule the next look.
 6. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
-7. For planning questions, run `bayestest duration`.
-8. For pasted stats messages, run `bayestest analyze-text`.
+7. For planning questions, run `ablift duration`.
+8. For pasted stats messages, run `ablift analyze-text`.
 
 ## Input validation errors
 
