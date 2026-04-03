@@ -9,9 +9,7 @@ uv sync --all-groups
 
 ## Commands
 ```bash
-uv run pytest          # tests
-uv run ruff check .    # lint
-uv run ruff format .   # format
+uv run pytest          # tests (also runs on push via pre-commit)
 ablift doctor --strict # self-check
 ```
 
