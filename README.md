@@ -327,8 +327,6 @@ ablift analyze \
 
 The same structure works for `.xlsx` and `.xlsm`. Use `--sheet` to select a worksheet when needed.
 
-`analyze-file` still exists as a deprecated alias for compatibility, but `analyze` is the primary command now.
-
 ### Reusable project config
 
 Use `[tool.ablift]` in `pyproject.toml` when you want one decision policy and one set of Bayesian inference settings reused across analyses in the project.
