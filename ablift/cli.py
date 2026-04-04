@@ -14,22 +14,15 @@ from .engine import analyze as run_analysis
 from .engine import parse_payload
 from .planning import bayesian_duration_conversion, frequentist_duration_conversion
 from .reporting import build_markdown_report
-from .text_parser import parse_duration_prompt, parse_variant_lines
+from .text_parser import parse_duration_prompt
 
 ANALYZE_EPILOG = """\b
 Examples:
   ablift analyze --input experiment.json
   ablift analyze --input experiment.csv
   ablift analyze --input experiment.xlsx --sheet Results
-  ablift analyze --input experiment.csv --mapping mapping.json
   ablift analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
   ablift analyze --input experiment.json --report report.md
-"""
-
-ANALYZE_TEXT_EPILOG = """\b
-Examples:
-  ablift analyze-text --text "control: 1000 visitors, 40 conversions; v1: 1000 visitors, 45 conversions"
-  ablift analyze-text --text-file summary.txt --output result.json
 """
 
 
@@ -70,7 +63,6 @@ def _load_project_config() -> dict[str, Any]:
 def _load_analysis_payload(
     *,
     input_path: str,
-    mapping_path: str | None,
     sheet: str | None,
     defaults: dict[str, Any],
 ) -> dict[str, Any]:
@@ -79,24 +71,15 @@ def _load_analysis_payload(
     if suffix == ".json":
         input_payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
         payload = _deep_merge(config_payload, _deep_merge(input_payload, defaults))
-        payload.setdefault(
-            "input_interpretation",
-            {
-                "source_type": "json",
-                "mapping_used": False,
-            },
-        )
+        payload.setdefault("input_interpretation", {"source_type": "json"})
         return payload
 
     if suffix not in {".csv", ".xlsx", ".xlsm"}:
         raise click.ClickException("Unsupported analysis input. Use .json, .csv, .xlsx, or .xlsm.")
 
-    mapping = None
-    if mapping_path:
-        mapping = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
     rows = read_table(input_path, sheet=sheet)
     table_defaults = _deep_merge(config_payload, defaults)
-    return build_payload_from_rows(rows, mapping=mapping, defaults=table_defaults)
+    return build_payload_from_rows(rows, defaults=table_defaults)
 
 
 def example_payload() -> dict:
@@ -105,8 +88,6 @@ def example_payload() -> dict:
         "method": "bayesian",
         "primary_metric": "conversion_rate",
         "alpha": 0.05,
-        "look_index": 3,
-        "max_looks": 10,
         "variants": [
             {
                 "name": "control",
@@ -146,43 +127,6 @@ def example_payload() -> dict:
     }
 
 
-def example_mapping() -> dict:
-    return {
-        "experiment_name": "checkout_button_color",
-        "method": "bayesian",
-        "primary_metric": "conversion_rate",
-        "alpha": 0.05,
-        "look_index": 3,
-        "max_looks": 10,
-        "columns": {
-            "variant": "variant_name",
-            "visitors": "sessions",
-            "conversions": "click_sessions",
-            "is_control": "is_control",
-            "revenue_sum": "revenue_sum",
-            "revenue_sum_squares": "revenue_sum_squares",
-        },
-        "control": {
-            "column": "variant_name",
-            "value": "control",
-        },
-        "guardrails": [
-            {
-                "name": "p95_latency_ms",
-                "control": 420.0,
-                "treatment": 430.0,
-                "direction": "decrease",
-                "max_relative_change": 0.05,
-            }
-        ],
-        "decision_thresholds": {
-            "bayes_prob_beats_control": 0.95,
-            "max_expected_loss": 0.001,
-        },
-        "samples": 50000,
-        "random_seed": 7,
-    }
-
 
 def example_duration_prompt() -> str:
     return (
@@ -195,25 +139,6 @@ def example_duration_prompt() -> str:
         "Looks: 10\n"
     )
 
-
-def example_duration_mapping() -> dict:
-    return {
-        "method": "frequentist",
-        "columns": {
-            "method": "method",
-            "baseline_rate": "baseline_rate",
-            "relative_mde": "relative_mde",
-            "daily_traffic": "daily_traffic",
-            "n_variants": "n_variants",
-            "alpha": "alpha",
-            "power": "power",
-            "max_looks": "max_looks",
-            "prob_threshold": "prob_threshold",
-            "max_expected_loss": "max_expected_loss",
-            "assurance_target": "assurance_target",
-            "max_days": "max_days",
-        },
-    }
 
 
 def run_doctor() -> dict:
@@ -269,13 +194,6 @@ def cli() -> None:
     help="Path to input .json, .csv, .xlsx, or .xlsm.",
 )
 @click.option(
-    "--mapping",
-    "mapping_path",
-    required=False,
-    type=click.Path(exists=True),
-    help="Optional JSON mapping for CSV/XLSX column names.",
-)
-@click.option(
     "--sheet", required=False, default=None, help="Excel sheet name for .xlsx/.xlsm input."
 )
 @click.option(
@@ -286,7 +204,7 @@ def cli() -> None:
 )
 @click.option(
     "--method",
-    type=click.Choice(["bayesian", "frequentist_sequential"]),
+    type=click.Choice(["bayesian", "sequential"]),
     default=None,
     help="Optional method override for CSV/XLSX input.",
 )
@@ -315,14 +233,10 @@ def cli() -> None:
 )
 @click.option("--alpha", type=float, default=None, help="Optional alpha override.")
 @click.option(
-    "--look-index", type=int, default=None, help="Optional sequential look index override."
-)
-@click.option("--max-looks", type=int, default=None, help="Optional sequential max looks override.")
-@click.option(
-    "--information-fraction",
+    "--sequential-tau",
     type=float,
     default=None,
-    help="Optional sequential information fraction override.",
+    help="mSPRT mixing parameter (prior std on effect size). Defaults to 10% of control baseline.",
 )
 @click.option(
     "--samples", type=int, default=None, help="Optional Bayesian posterior sample count override."
@@ -346,7 +260,6 @@ def cli() -> None:
 )
 def analyze(
     input_path: str,
-    mapping_path: str | None,
     sheet: str | None,
     experiment_name: str | None,
     method: str | None,
@@ -355,9 +268,7 @@ def analyze(
     prob_threshold: float | None,
     max_expected_loss: float | None,
     alpha: float | None,
-    look_index: int | None,
-    max_looks: int | None,
-    information_fraction: float | None,
+    sequential_tau: float | None,
     samples: int | None,
     random_seed: int | None,
     output_path: str | None,
@@ -382,16 +293,13 @@ def analyze(
         "primary_metric": primary_metric,
         "decision_policy": decision_policy,
         "alpha": alpha,
-        "look_index": look_index,
-        "max_looks": max_looks,
-        "information_fraction": information_fraction,
+        "sequential_tau": sequential_tau,
         "samples": samples,
         "random_seed": random_seed,
     }
     try:
         input_payload = _load_analysis_payload(
             input_path=input_path,
-            mapping_path=mapping_path,
             sheet=sheet,
             defaults=defaults,
         )
@@ -411,20 +319,13 @@ def analyze(
 @click.option(
     "--input", "input_path", required=True, type=click.Path(exists=True), help="Path to CSV/XLSX."
 )
-@click.option(
-    "--mapping",
-    "mapping_path",
-    required=False,
-    type=click.Path(exists=True),
-    help="Optional JSON mapping for CSV/XLSX column names.",
-)
 @click.option("--sheet", required=False, default=None, help="Excel sheet name.")
 @click.option(
     "--experiment-name", required=False, default=None, help="Optional experiment name override."
 )
 @click.option(
     "--method",
-    type=click.Choice(["bayesian", "frequentist_sequential"]),
+    type=click.Choice(["bayesian", "sequential"]),
     default=None,
     help="Optional method override.",
 )
@@ -450,7 +351,6 @@ def analyze(
 )
 def analyze_file(
     input_path: str,
-    mapping_path: str | None,
     sheet: str | None,
     experiment_name: str | None,
     method: str | None,
@@ -465,7 +365,6 @@ def analyze_file(
     try:
         input_payload = _load_analysis_payload(
             input_path=input_path,
-            mapping_path=mapping_path,
             sheet=sheet,
             defaults={
                 "experiment_name": experiment_name,
@@ -481,44 +380,6 @@ def analyze_file(
         _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-
-
-@cli.command("analyze-text", epilog=ANALYZE_TEXT_EPILOG)
-@click.option("--text", required=False, default=None, help="Raw pasted text.")
-@click.option(
-    "--text-file",
-    "text_file",
-    required=False,
-    type=click.Path(exists=True),
-    help="Path to pasted text file.",
-)
-@click.option("--experiment-name", default="text_input_experiment", show_default=True)
-@click.option("--method", default="bayesian", show_default=True)
-@click.option("--primary-metric", default="conversion_rate", show_default=True)
-@click.option("--output", "output_path", required=False, type=click.Path())
-@click.option("--report", "report_path", required=False, type=click.Path())
-def analyze_text(
-    text: str | None,
-    text_file: str | None,
-    experiment_name: str,
-    method: str,
-    primary_metric: str,
-    output_path: str | None,
-    report_path: str | None,
-) -> None:
-    """Parse pasted variant lines and analyze."""
-    if not text and text_file:
-        text = Path(text_file).read_text(encoding="utf-8")
-    if not text:
-        raise click.UsageError("Provide --text or --text-file.")
-    variants = parse_variant_lines(text)
-    payload = {
-        "experiment_name": experiment_name,
-        "method": method,
-        "primary_metric": primary_metric,
-        "variants": variants,
-    }
-    _emit_analysis(run_analysis(parse_payload(payload)), output_path, report_path)
 
 
 @cli.command()
@@ -554,13 +415,6 @@ def analyze_text(
     type=click.Path(exists=True),
     help="CSV/XLSX input for duration assumptions.",
 )
-@click.option(
-    "--mapping",
-    "mapping_path",
-    required=False,
-    type=click.Path(exists=True),
-    help="JSON mapping for duration table columns.",
-)
 @click.option("--sheet", required=False, default=None, help="Excel sheet name for duration input.")
 def duration(
     method: str | None,
@@ -578,14 +432,12 @@ def duration(
     output_path: str | None,
     prompt_text: str | None,
     input_path: str | None,
-    mapping_path: str | None,
     sheet: str | None,
 ) -> None:
     """Estimate test duration from assumptions."""
-    if input_path and mapping_path:
+    if input_path:
         rows = read_table(input_path, sheet=sheet)
-        duration_mapping = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
-        file_req = build_duration_request_from_rows(rows, duration_mapping)
+        file_req = build_duration_request_from_rows(rows)
         method = method or file_req["method"]
         baseline_rate = baseline_rate if baseline_rate is not None else file_req["baseline_rate"]
         relative_mde = relative_mde if relative_mde is not None else file_req["relative_mde"]
@@ -687,22 +539,10 @@ def example_input() -> None:
     click.echo(json.dumps(example_payload(), indent=2))
 
 
-@cli.command("example-mapping")
-def example_mapping_cmd() -> None:
-    """Print an example mapping JSON for CSV/XLSX."""
-    click.echo(json.dumps(example_mapping(), indent=2))
-
-
 @cli.command("example-duration-prompt")
 def example_duration_prompt_cmd() -> None:
     """Print a duration prompt text example."""
     click.echo(example_duration_prompt(), nl=False)
-
-
-@cli.command("example-duration-mapping")
-def example_duration_mapping_cmd() -> None:
-    """Print a duration mapping JSON for CSV/XLSX."""
-    click.echo(json.dumps(example_duration_mapping(), indent=2))
 
 
 if __name__ == "__main__":
