@@ -5,9 +5,11 @@ from scipy.stats import chi2
 from statsmodels.stats.proportion import proportions_ztest
 
 from ablift.engine import (
+    always_valid_ci_margin,
     analyze,
     evaluate_srm,
     mean_and_var_from_aggregates,
+    msrpt_statistic,
     parse_payload,
     two_proportion_test,
 )
@@ -38,10 +40,8 @@ class EngineTests(unittest.TestCase):
     def test_guardrail_failure_blocks_ship(self):
         payload = {
             "experiment_name": "exp",
-            "method": "frequentist_sequential",
+            "method": "sequential",
             "alpha": 0.05,
-            "look_index": 10,
-            "max_looks": 10,
             "variants": [
                 {"name": "control", "visitors": 50000, "conversions": 3000, "is_control": True},
                 {"name": "treatment", "visitors": 50000, "conversions": 3500, "is_control": False},
@@ -184,6 +184,43 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(z_value, expected_z, places=10)
         self.assertAlmostEqual(p_value, expected_p_value, places=10)
         self.assertAlmostEqual(unpooled_se, expected_unpooled_se, places=10)
+
+    def test_sequential_conversion_reaches_significance_for_clear_winner(self):
+        payload = {
+            "experiment_name": "exp",
+            "method": "sequential",
+            "alpha": 0.05,
+            "variants": [
+                {"name": "control", "visitors": 50000, "conversions": 2000, "is_control": True},
+                {"name": "treatment", "visitors": 50000, "conversions": 2400, "is_control": False},
+            ],
+        }
+        result = analyze(parse_payload(payload))
+        comp = result.comparisons[0]
+        self.assertIsNotNone(comp.e_value)
+        self.assertIsNotNone(comp.e_threshold)
+        self.assertAlmostEqual(comp.e_threshold, 20.0)  # 1/0.05
+        self.assertTrue(comp.significant)
+        self.assertIsNotNone(comp.ci_low)
+        self.assertIsNotNone(comp.ci_high)
+        self.assertGreater(comp.ci_low, 0)  # always-valid CI excludes zero for clear winner
+
+    def test_msrpt_statistic_increases_with_effect_size(self):
+        # Larger effect → higher e-value
+        small = msrpt_statistic(delta_hat=0.001, se=0.01, tau=0.005)
+        large = msrpt_statistic(delta_hat=0.05, se=0.01, tau=0.005)
+        self.assertGreater(large, small)
+
+    def test_always_valid_ci_wider_than_standard(self):
+        # Always-valid CI should be wider than a standard 95% CI at the same alpha
+        import math
+        from statistics import NormalDist
+        se = 0.01
+        tau = 0.005
+        alpha = 0.05
+        standard_margin = NormalDist().inv_cdf(1 - alpha / 2) * se
+        av_margin = always_valid_ci_margin(se, tau, alpha)
+        self.assertGreater(av_margin, standard_margin)
 
     def test_mean_and_var_from_aggregates_matches_hand_worked_example(self):
         mean, variance = mean_and_var_from_aggregates(

@@ -45,12 +45,7 @@ class AnalyzeCliTests(unittest.TestCase):
         self.assertEqual(payload["control_variant"], "control")
         self.assertIsNone(payload["recommendation"])
         self.assertEqual(
-            payload["analysis_settings"]["input_interpretation"]["source_type"], "table"
-        )
-        self.assertFalse(payload["analysis_settings"]["input_interpretation"]["mapping_used"])
-        self.assertEqual(
-            payload["analysis_settings"]["input_interpretation"]["resolved_columns"]["visitors"],
-            "sessions",
+            payload["analysis_settings"]["input_interpretation"]["source_type"], "aggregated"
         )
 
     def test_analyze_file_alias_still_works(self):
@@ -122,8 +117,7 @@ class AnalyzeCliTests(unittest.TestCase):
             result = runner.invoke(cli, ["analyze", "--input", str(input_path)])
 
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("Pass --mapping with an explicit columns section", result.output)
-        self.assertIn("Tried aliases", result.output)
+        self.assertIn("at least 3 columns", result.output)
 
 
 if __name__ == "__main__":

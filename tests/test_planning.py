@@ -1,7 +1,7 @@
 import unittest
 
 from ablift.planning import bayesian_duration_conversion, frequentist_duration_conversion
-from ablift.text_parser import parse_duration_prompt, parse_variant_lines
+from ablift.text_parser import parse_duration_prompt
 
 
 class PlanningTests(unittest.TestCase):
@@ -36,12 +36,6 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(parsed["daily_total_traffic"], 50000)
         self.assertAlmostEqual(parsed["baseline_rate"], 0.04)
         self.assertAlmostEqual(parsed["relative_mde"], 0.05)
-
-    def test_parse_variant_lines(self):
-        text = "Variant A: 100 conversions out of 2000 visitors\nVariant B: 125 conversions out of 2000 visitors"
-        variants = parse_variant_lines(text)
-        self.assertEqual(len(variants), 2)
-        self.assertTrue(any(v["is_control"] for v in variants))
 
 
 if __name__ == "__main__":
