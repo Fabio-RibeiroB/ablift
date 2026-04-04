@@ -43,9 +43,7 @@ class AnalysisInput:
     variants: list[VariantInput]
     primary_metric: str = "conversion_rate"
     alpha: float = 0.05
-    look_index: int = 1
-    max_looks: int = 1
-    information_fraction: float | None = None
+    sequential_tau: float | None = None
     guardrails: list[GuardrailInput] = field(default_factory=list)
     decision_policy: DecisionPolicy = field(default_factory=DecisionPolicy)
     random_seed: int = 7
@@ -57,9 +55,7 @@ class AnalysisInput:
 class AnalysisSettings:
     primary_metric: str
     alpha: float
-    look_index: int
-    max_looks: int
-    information_fraction: float | None
+    sequential_tau: float | None
     samples: int
     random_seed: int
     priors: dict[str, Any]
@@ -89,7 +85,8 @@ class ComparisonResult:
     absolute_lift: float
     relative_lift: float
     p_value: float | None = None
-    alpha_spent: float | None = None
+    e_value: float | None = None
+    e_threshold: float | None = None
     significant: bool | None = None
     probability_beats_control: float | None = None
     expected_loss: float | None = None

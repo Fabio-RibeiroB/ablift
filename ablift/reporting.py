@@ -44,8 +44,8 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
     else:
         lines.extend(
             [
-                f"  - p-value: {_fmt_float(comp.p_value, 6)}",
-                f"  - Alpha spent: {_fmt_float(comp.alpha_spent, 6)}",
+                f"  - e-value: {_fmt_float(comp.e_value, 4)}",
+                f"  - e-threshold (1/α): {_fmt_float(comp.e_threshold, 4)}",
                 f"  - Significant now: `{comp.significant}`",
             ]
         )

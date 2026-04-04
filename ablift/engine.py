@@ -60,9 +60,7 @@ def parse_payload(payload: dict) -> AnalysisInput:
         variants=variants,
         primary_metric=payload.get("primary_metric", "conversion_rate"),
         alpha=payload.get("alpha", 0.05),
-        look_index=payload.get("look_index", 1),
-        max_looks=payload.get("max_looks", 1),
-        information_fraction=payload.get("information_fraction"),
+        sequential_tau=payload.get("sequential_tau"),
         guardrails=guardrails,
         decision_policy=decision_policy,
         random_seed=payload.get("random_seed", 7),
@@ -94,8 +92,8 @@ def validate_input(inp: AnalysisInput) -> None:
     if inp.alpha <= 0 or inp.alpha >= 1:
         raise ValueError("alpha must be in (0, 1).")
 
-    if inp.method not in {"bayesian", "frequentist_sequential"}:
-        raise ValueError("method must be 'bayesian' or 'frequentist_sequential'.")
+    if inp.method not in {"bayesian", "sequential"}:
+        raise ValueError("method must be 'bayesian' or 'sequential'.")
     if inp.primary_metric not in {"conversion_rate", "arpu"}:
         raise ValueError("primary_metric must be 'conversion_rate' or 'arpu'.")
 
@@ -134,9 +132,9 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
             comparisons = analyze_bayesian_arpu(inp, control, treatments)
     else:
         if inp.primary_metric == "conversion_rate":
-            comparisons = analyze_frequentist_sequential_conversion(inp, control, treatments)
+            comparisons = analyze_sequential_conversion(inp, control, treatments)
         else:
-            comparisons = analyze_frequentist_sequential_arpu(inp, control, treatments)
+            comparisons = analyze_sequential_arpu(inp, control, treatments)
 
     recommendation = recommend(inp, comparisons, guardrails_passed, srm_result)
 
@@ -309,9 +307,7 @@ def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
     return AnalysisSettings(
         primary_metric=inp.primary_metric,
         alpha=inp.alpha,
-        look_index=inp.look_index,
-        max_looks=inp.max_looks,
-        information_fraction=inp.information_fraction,
+        sequential_tau=inp.sequential_tau,
         samples=inp.samples,
         random_seed=inp.random_seed,
         priors=priors,
@@ -374,34 +370,58 @@ def analyze_bayesian_arpu(
     return out
 
 
-def analyze_frequentist_sequential_conversion(
+def _default_tau(baseline: float) -> float:
+    """Default mSPRT mixing parameter: 10% relative to baseline."""
+    return max(abs(baseline) * 0.1, 1e-6)
+
+
+def msrpt_statistic(delta_hat: float, se: float, tau: float) -> float:
+    """mSPRT likelihood ratio statistic (Johari et al. 2017).
+
+    Reject H0 when this exceeds 1/alpha.
+    tau is the prior standard deviation on the effect size (mixing parameter).
+    """
+    if se <= 0 or tau <= 0:
+        return 1.0
+    v = se * se
+    t2 = tau * tau
+    exponent = (delta_hat * delta_hat * t2) / (2.0 * v * (v + t2))
+    return math.sqrt(v / (v + t2)) * math.exp(min(exponent, 700.0))
+
+
+def always_valid_ci_margin(se: float, tau: float, alpha: float) -> float:
+    """Half-width of always-valid confidence interval (Johari et al. 2017)."""
+    if se <= 0 or tau <= 0:
+        return float("inf")
+    v = se * se
+    t2 = tau * tau
+    rho2 = t2 / v
+    inner = (1.0 / alpha) * math.sqrt(1.0 + rho2)
+    if inner <= 1.0:
+        return float("inf")
+    return se * math.sqrt((1.0 + rho2) / rho2 * 2.0 * math.log(inner))
+
+
+def analyze_sequential_conversion(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
 ) -> list[ComparisonResult]:
-    info_fraction = inp.information_fraction
-    if info_fraction is None:
-        info_fraction = min(max(inp.look_index / max(inp.max_looks, 1), 1e-9), 1.0)
-    else:
-        info_fraction = min(max(info_fraction, 1e-9), 1.0)
-
-    alpha_spent = obrien_fleming_alpha_spent(inp.alpha, info_fraction)
+    e_threshold = 1.0 / inp.alpha
+    control_rate = control.conversions / control.visitors
 
     out: list[ComparisonResult] = []
     for treatment in treatments:
-        p_value, z_value, se = two_proportion_test(
+        _, _, se = two_proportion_test(
             control.conversions,
             control.visitors,
             treatment.conversions,
             treatment.visitors,
         )
-        significant = p_value <= alpha_spent
-
-        control_rate = control.conversions / control.visitors
         treatment_rate = treatment.conversions / treatment.visitors
-
-        z_crit = NormalDist().inv_cdf(1 - alpha_spent / 2)
         diff = treatment_rate - control_rate
-        ci_low = diff - z_crit * se
-        ci_high = diff + z_crit * se
+        tau = inp.sequential_tau if inp.sequential_tau is not None else _default_tau(control_rate)
+
+        e_val = msrpt_statistic(diff, se, tau)
+        margin = always_valid_ci_margin(se, tau, inp.alpha)
 
         out.append(
             ComparisonResult(
@@ -412,46 +432,40 @@ def analyze_frequentist_sequential_conversion(
                 treatment_rate=treatment_rate,
                 absolute_lift=diff,
                 relative_lift=diff / max(control_rate, 1e-12),
-                p_value=float(p_value),
-                alpha_spent=float(alpha_spent),
-                significant=bool(significant),
-                ci_low=float(ci_low),
-                ci_high=float(ci_high),
+                e_value=float(e_val),
+                e_threshold=float(e_threshold),
+                significant=bool(e_val >= e_threshold),
+                ci_low=float(diff - margin),
+                ci_high=float(diff + margin),
             )
         )
 
     return out
 
 
-def analyze_frequentist_sequential_arpu(
+def analyze_sequential_arpu(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
 ) -> list[ComparisonResult]:
-    info_fraction = inp.information_fraction
-    if info_fraction is None:
-        info_fraction = min(max(inp.look_index / max(inp.max_looks, 1), 1e-9), 1.0)
-    else:
-        info_fraction = min(max(info_fraction, 1e-9), 1.0)
+    e_threshold = 1.0 / inp.alpha
+    c_mean, c_var = mean_and_var_from_aggregates(
+        control.visitors,
+        float(control.revenue_sum or 0.0),
+        float(control.revenue_sum_squares or 0.0),
+    )
 
-    alpha_spent = obrien_fleming_alpha_spent(inp.alpha, info_fraction)
     out: list[ComparisonResult] = []
-
     for treatment in treatments:
-        c_mean, c_var = mean_and_var_from_aggregates(
-            control.visitors,
-            float(control.revenue_sum or 0.0),
-            float(control.revenue_sum_squares or 0.0),
-        )
         t_mean, t_var = mean_and_var_from_aggregates(
             treatment.visitors,
             float(treatment.revenue_sum or 0.0),
             float(treatment.revenue_sum_squares or 0.0),
         )
         se = math.sqrt(max((c_var / control.visitors) + (t_var / treatment.visitors), 1e-18))
-        z = (t_mean - c_mean) / se
-        p_value = 2 * (1 - NormalDist().cdf(abs(z)))
-        significant = p_value <= alpha_spent
-        z_crit = NormalDist().inv_cdf(1 - alpha_spent / 2)
         diff = t_mean - c_mean
+        tau = inp.sequential_tau if inp.sequential_tau is not None else _default_tau(c_mean)
+
+        e_val = msrpt_statistic(diff, se, tau)
+        margin = always_valid_ci_margin(se, tau, inp.alpha)
 
         out.append(
             ComparisonResult(
@@ -462,11 +476,11 @@ def analyze_frequentist_sequential_arpu(
                 treatment_rate=t_mean,
                 absolute_lift=diff,
                 relative_lift=diff / max(c_mean, 1e-12),
-                p_value=float(p_value),
-                alpha_spent=float(alpha_spent),
-                significant=bool(significant),
-                ci_low=float(diff - z_crit * se),
-                ci_high=float(diff + z_crit * se),
+                e_value=float(e_val),
+                e_threshold=float(e_threshold),
+                significant=bool(e_val >= e_threshold),
+                ci_low=float(diff - margin),
+                ci_high=float(diff + margin),
             )
         )
 
@@ -486,12 +500,6 @@ def two_proportion_test(x1: int, n1: int, x2: int, n2: int) -> tuple[float, floa
     unpooled_se = math.sqrt(max((p1 * (1 - p1) / n1) + (p2 * (1 - p2) / n2), 1e-18))
 
     return p_value, z, unpooled_se
-
-
-def obrien_fleming_alpha_spent(alpha: float, info_fraction: float) -> float:
-    z_alpha = NormalDist().inv_cdf(1 - alpha / 2)
-    spent = 2 - 2 * NormalDist().cdf(z_alpha / math.sqrt(info_fraction))
-    return min(max(spent, 1e-12), alpha)
 
 
 def mean_and_var_from_aggregates(
@@ -620,8 +628,8 @@ def recommend(
         return Recommendation(
             action=f"ship_{best.treatment}",
             rationale=(
-                f"Sequential significance reached for {best.treatment} "
-                f"(p={best.p_value:.5f} <= alpha_spent={best.alpha_spent:.5f})."
+                f"mSPRT significance reached for {best.treatment} "
+                f"(e-value={best.e_value:.3f} >= threshold={best.e_threshold:.1f})."
             ),
             decision_confidence=0.95,
             next_best_action="Roll out gradually and continue guardrail monitoring.",
@@ -631,7 +639,10 @@ def recommend(
     if best.significant and best.absolute_lift < 0:
         return Recommendation(
             action="stop_and_rollback",
-            rationale="Significant negative lift detected under sequential testing.",
+            rationale=(
+                f"Significant negative lift detected (e-value={best.e_value:.3f} "
+                f">= threshold={best.e_threshold:.1f})."
+            ),
             decision_confidence=0.95,
             next_best_action="Rollback treatment and investigate adverse drivers.",
             risk_flags=risk_flags,
@@ -639,8 +650,8 @@ def recommend(
 
     return Recommendation(
         action="continue_collecting_data",
-        rationale="Sequential significance boundary not reached yet.",
+        rationale="mSPRT significance threshold not reached yet — safe to keep looking.",
         decision_confidence=0.5,
-        next_best_action="Wait for more information fraction or sample size.",
+        next_best_action="Collect more data; the always-valid test controls error rate at any sample size.",
         risk_flags=risk_flags,
     )
