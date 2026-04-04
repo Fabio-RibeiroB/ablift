@@ -18,7 +18,7 @@ It supports:
 - SRM detection (sample ratio mismatch) for data quality
 - Structured JSON output for agents and automations
 - Markdown report generation for human review
-- CSV/XLSX ingestion with mapping files
+- CSV/XLSX ingestion with auto-detected column layout
 
 ## Install
 
@@ -85,16 +85,6 @@ Run with an explicit Bayesian decision policy:
 ablift analyze --input bayesian_input.csv
 ```
 
-Run from CSV/XLSX with an explicit mapping file when the source headers are unusual:
-
-```bash
-ablift analyze \
-  --input examples/conversion_multivariant.csv \
-  --mapping examples/mapping_conversion_bayes.json \
-  --output output.json \
-  --report report.md
-```
-
 If you are developing from the repo, use the same commands prefixed with `uv run`:
 
 ```bash
@@ -107,11 +97,9 @@ uv run ablift analyze \
 ## Command summary
 
 - `ablift analyze`: analyze `.json`, `.csv`, `.xlsx`, or `.xlsm` input
-- `ablift analyze-text`: parse pasted stats text into an analysis payload
 - `ablift duration`: estimate runtime needed for a test
 - `ablift doctor`: verify the environment and required dependencies
 - `ablift example-input`: print a starter JSON payload
-- `ablift example-mapping`: print a starter mapping file
 
 ## Choosing the metric model
 
@@ -151,11 +139,7 @@ The input contract is strict about semantics, not source column names.
 
 For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `ablift` reports the posterior estimates but leaves `recommendation` as `null`.
 
-For CSV/XLSX input, the JSON output also includes `analysis_settings.input_interpretation` so agents can see:
-- whether a mapping file was used
-- which columns were inferred
-- which columns were ultimately resolved
-- how the control row was identified
+For CSV/XLSX input, the JSON output also includes `analysis_settings.input_interpretation` so agents can see the detected input shape (`row_level` or `aggregated`) and whether ARPU results are approximate.
 
 For analysis inputs:
 - at least 2 variants are required
@@ -183,20 +167,6 @@ Internal field meanings:
 - `visitors`: denominator units exposed to the experiment
 - `conversions`: success units for the primary outcome
 - `is_control`: whether the row is the control variant
-
-The source headers do not need to be named `visitors` and `conversions`. You can map any business-specific column names into these internal fields.
-
-Good source-column examples:
-- `sessions` -> `visitors`
-- `click_sessions` -> `conversions`
-- `users_exposed` -> `visitors`
-- `orders` -> `conversions`
-- `visits` -> `visitors`
-- `signup_visits` -> `conversions`
-
-Ambiguous or risky source-column examples:
-- `clicks` -> `conversions` only if each denominator unit can contribute at most one click
-- `orders` -> `conversions` only if the metric is "users who ordered" or "visits with an order", not total order count when repeats are possible
 
 ## JSON input
 
@@ -264,73 +234,31 @@ Bayesian ARPU probability-to-win example:
 
 ## CSV/XLSX input
 
-For tabular input, `ablift analyze` tries to work out of the box.
+`ablift analyze` reads CSV and XLSX files using **positional columns** — column names are ignored, column order determines the role.
 
-It can infer common headers such as:
-- variant: `variant`, `variant_name`, `group`, `arm`, `treatment`
-- denominator: `visitors`, `users`, `sessions`, `visits`, `exposures`
-- success count: `conversions`, `orders`, `purchases`, `signups`, `click_sessions`
-- control flag: `is_control`, `control`
+### Aggregated input (one row per variant)
 
-If there is no explicit control column, `ablift` also treats a variant named `control` as the control row.
+| Col 1 | Col 2 | Col 3 | Col 4 (optional) |
+|-------|-------|-------|-----------------|
+| variant name | visitors | conversions **or** revenue_sum | is_control (boolean) |
 
-### What mapping means
+If col 3 values are integers ≤ col 2 → conversion rate analysis.
+If col 3 values are floats or exceed col 2 → ARPU analysis (approximate, flagged in output).
 
-A mapping file is a translation layer from raw source headers into the canonical fields used by the analysis engine.
+### Row-level input (one row per observation)
 
-You only need a mapping when:
-- your headers do not match the common aliases
-- you want to force a specific interpretation
-- you want to store analysis settings together with the column mapping
+| Col 1 | Col 2 | Col 3 (optional) |
+|-------|-------|-----------------|
+| variant name | outcome | is_control (boolean) |
 
-Generate a mapping template:
+If col 2 values are 0/1 → conversion rate analysis (tool counts visitors and conversions per variant).
+If col 2 values are continuous → ARPU analysis (tool computes revenue_sum and revenue_sum_squares per variant).
 
-```bash
-ablift example-mapping > mapping.json
-```
+### Control detection
 
-Use `analyze` with `--mapping` when your source data uses business-specific column names that cannot be inferred reliably.
+The first variant (first row or first group) is treated as control by default. To override, include a boolean column (values like `true`/`false`, `1`/`0`, `yes`/`no`) — the tool detects it automatically.
 
-Mapping keys:
-- `columns.variant`, `columns.visitors`, `columns.conversions`
-- optional `columns.is_control`
-- optional `columns.revenue_sum`, `columns.revenue_sum_squares`
-- optional control detection fallback: `control.column` + `control.value`
-
-Example source CSV using business names:
-
-```csv
-variant_name,sessions,click_sessions,is_control
-control,50000,2000,true
-v1,50000,2080,false
-v2,50000,2140,false
-```
-
-Matching mapping file:
-
-```json
-{
-  "experiment_name": "homepage_cta",
-  "method": "bayesian",
-  "primary_metric": "conversion_rate",
-  "columns": {
-    "variant": "variant_name",
-    "visitors": "sessions",
-    "conversions": "click_sessions",
-    "is_control": "is_control"
-  }
-}
-```
-
-Run it:
-
-```bash
-ablift analyze \
-  --input input.csv \
-  --mapping mapping.json
-```
-
-The same structure works for `.xlsx` and `.xlsm`. Use `--sheet` to select a worksheet when needed.
+Use `--sheet` to select a worksheet in `.xlsx`/`.xlsm` files.
 
 ### Reusable project config
 
@@ -359,10 +287,7 @@ Precedence is:
 
 Bundled examples:
 - [examples/conversion_multivariant.csv](examples/conversion_multivariant.csv)
-- [examples/mapping_conversion_bayes.json](examples/mapping_conversion_bayes.json)
 - [examples/arpu_bayesian.csv](examples/arpu_bayesian.csv)
-- [examples/mapping_arpu_bayes.json](examples/mapping_arpu_bayes.json)
-- [examples/duration_mapping.json](examples/duration_mapping.json)
 
 ## More examples
 
@@ -448,33 +373,22 @@ uv run ablift duration \
   --max-days 60
 ```
 
-Analyze pasted stats text:
-
-```bash
-uv run ablift analyze-text \
-  --text "Variant A: 100 conversions out of 2000 visitors\nVariant B: 125 conversions out of 2000 visitors" \
-  --experiment-name pasted_example
-```
-
-Estimate duration from CSV/XLSX:
+Estimate duration from CSV/XLSX (column names must match field names: `baseline_rate`, `relative_mde`, `daily_traffic`, etc.):
 
 ```bash
 uv run ablift duration \
   --input examples/duration_inputs.xlsx \
-  --mapping examples/duration_mapping.json \
   --sheet Sheet1
 ```
 
 ## Agent Playbook
 
-1. Try `ablift analyze --input ...` directly first.
-2. If the table is unusual, build `mapping.json` to translate source headers into `ablift` fields.
-3. Run `ablift analyze ...`.
-4. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
-5. If `action=continue_collecting_data`, schedule the next look.
-6. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
-7. For planning questions, run `ablift duration`.
-8. For pasted stats messages, run `ablift analyze-text`.
+1. Run `ablift analyze --input ...` with a JSON, CSV, or XLSX file.
+2. For CSV/XLSX, format data with positional columns (see CSV/XLSX input section).
+3. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
+4. If `action=continue_collecting_data`, schedule the next look.
+5. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
+6. For planning questions, run `ablift duration`.
 
 ## Input validation errors
 
@@ -482,11 +396,9 @@ Common errors and fixes:
 - `Exactly one variant must have is_control=true`:
   mark one and only one control row.
 - `conversions cannot exceed visitors`:
-  fix aggregation query or mapped columns. This often means the metric is a repeated-event count rather than a binary outcome.
-- `ARPU requires revenue_sum and revenue_sum_squares`:
-  include both revenue aggregate columns.
+  the metric is a repeated-event count rather than a binary outcome — redefine as binary per unit.
 - `primary_metric must be 'conversion_rate' or 'arpu'`:
-  fix mapping or input payload values.
+  fix the input payload value.
 
 ## Agent output contract
 
