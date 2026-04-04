@@ -4,36 +4,6 @@ import re
 from typing import Any
 
 
-def parse_variant_lines(text: str) -> list[dict[str, Any]]:
-    variants: list[dict[str, Any]] = []
-    pattern = re.compile(
-        r"variant\s*(?P<name>[\w\- ]+)\s*[:\-]\s*"
-        r"(?P<conversions>\d+)\s*conversions?"
-        r"(?:\s*out of\s*(?P<visitors>\d+)\s*(?:visitors|users|trials))?",
-        flags=re.IGNORECASE,
-    )
-
-    for line in text.splitlines():
-        m = pattern.search(line)
-        if not m:
-            continue
-        name = m.group("name").strip().replace(" ", "_").lower()
-        conversions = int(m.group("conversions"))
-        visitors = int(m.group("visitors") or 0)
-        variants.append(
-            {
-                "name": name,
-                "conversions": conversions,
-                "visitors": visitors,
-                "is_control": ("control" in name) or (name in {"a", "variant_a"}),
-            }
-        )
-
-    if variants and not any(v["is_control"] for v in variants):
-        variants[0]["is_control"] = True
-    return variants
-
-
 def parse_duration_prompt(text: str) -> dict[str, Any]:
     def extract_float(keys: list[str], default: float | None = None) -> float | None:
         for key in keys:
