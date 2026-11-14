@@ -1,0 +1,33 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
+
+## [0.5.0] - 2026-11-14
+
+### Fixed
+- Aggregated ARPU CSV/XLSX inputs (`name`, `visitors`, `conversions`, `revenue_sum`, `revenue_sum_squares`) were silently analysed as conversion rate.
+- Aggregated revenue-only input failed validation.
+- Row-level ARPU crashed during analysis.
+- `make demo` used the removed `--mapping` flag.
+- Malformed input produced Python tracebacks instead of clean errors.
+
+### Changed
+- Sequential testing now uses mSPRT with always-valid confidence intervals (replacing O'Brien-Fleming).
+- Bonferroni correction across treatments in sequential mode.
+- Sequential comparisons report an always-valid p-value, and `decision_confidence` derives from it.
+- `ci_low`/`ci_high` are on the absolute-lift scale for both methods, with Bayesian `relative_ci_low`/`relative_ci_high`.
+- Duration planning methods are now `sequential` (mSPRT sample size, default), `fixed` and `bayesian`, with Bonferroni correction.
+- `duration` no longer prompts interactively.
+- Duration CSV columns are validated.
+- CSV/XLSX columns are inferred by position, and `input_interpretation.column_roles` reports the mapping.
+- JSON output includes `schema_version`.
+
+### Removed
+- `--mapping`, `--max-looks` and `--prompt-text` options.
+- `analyze-file` and `example-duration-prompt` commands.
+- `look_index`, `max_looks` and `information_fraction` inputs.
+- `arpu_approximate`.

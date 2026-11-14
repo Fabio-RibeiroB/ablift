@@ -78,12 +78,15 @@ def _is_binary_col(values: list[Any]) -> bool:
 
 
 def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | None:
-    """Return the name of a boolean-valued column beyond the first skip_cols positional columns."""
+    """Return the name of a boolean-valued column beyond the first skip_cols positional columns.
+
+    A control column must contain explicit true/false style values with at least one of each.
+    Columns are searched from the right so that numeric metric columns are not mistaken for it.
+    """
     if not rows:
         return None
     all_cols = list(rows[0].keys())
-    candidate_cols = all_cols[skip_cols:]
-    for col in candidate_cols:
+    for col in reversed(all_cols[skip_cols:]):
         values = [row.get(col) for row in rows]
         if not _is_binary_col(values):
             continue
@@ -144,19 +147,36 @@ def _build_payload_from_row_level(
         variant_obj: dict[str, Any] = {"name": name, "is_control": is_ctrl}
         if is_conversion:
             variant_obj["visitors"] = len(group_rows)
-            variant_obj["conversions"] = sum(
-                int(float(r.get(outcome_col, 0))) for r in group_rows
-            )
+            variant_obj["conversions"] = sum(_to_bool(r.get(outcome_col)) for r in group_rows)
         else:
-            values = [float(r.get(outcome_col, 0)) for r in group_rows]
+            values = [float(v) for r in group_rows if (v := r.get(outcome_col)) not in (None, "")]
             variant_obj["visitors"] = len(values)
+            variant_obj["conversions"] = sum(1 for v in values if v > 0)
             variant_obj["revenue_sum"] = sum(values)
             variant_obj["revenue_sum_squares"] = sum(v * v for v in values)
         variants.append(variant_obj)
 
+    if primary_metric == "arpu" and is_conversion:
+        raise ValueError("Row-level outcome column is binary; use primary_metric conversion_rate.")
+    if primary_metric == "conversion_rate" and not is_conversion:
+        raise ValueError(
+            "Row-level outcome column is continuous; conversion_rate needs 0/1 outcomes."
+        )
+
+    column_roles = {"variant": variant_col, "outcome": outcome_col}
+    if control_col:
+        column_roles["is_control"] = control_col
     return _build_final_payload(
-        variants, primary_metric, defaults, source_type="row_level", arpu_approximate=False
+        variants, primary_metric, defaults, source_type="row_level", column_roles=column_roles
     )
+
+
+AGGREGATED_LAYOUT_HELP = (
+    "Aggregated input layouts (one row per variant, columns by position):\n"
+    "  name, visitors, conversions [, is_control]\n"
+    "  name, visitors, revenue_sum, revenue_sum_squares [, is_control]\n"
+    "  name, visitors, conversions, revenue_sum, revenue_sum_squares [, is_control]"
+)
 
 
 def _build_payload_from_aggregated(
@@ -166,30 +186,53 @@ def _build_payload_from_aggregated(
     cols = list(rows[0].keys())
     if len(cols) < 3:
         raise ValueError(
-            "Aggregated input requires at least 3 columns: variant name, visitors, metric."
+            "Aggregated input requires at least 3 columns: variant name, visitors, metric.\n"
+            + AGGREGATED_LAYOUT_HELP
         )
     variant_col = cols[0]
     visitors_col = cols[1]
-    metric_col = cols[2]
     control_col = _find_control_column(rows, skip_cols=3)
+    metric_cols = [c for c in cols[2:] if c != control_col]
 
-    # Determine if col[2] is conversions (integers <= visitors) or revenue_sum
-    arpu_approximate = False
-    is_conversion = True
-    for row in rows:
-        try:
-            metric_val = float(row.get(metric_col, 0) or 0)
-            visitors_val = float(row.get(visitors_col, 0) or 0)
-            if metric_val != int(metric_val) or metric_val > visitors_val:
-                is_conversion = False
-                arpu_approximate = True
-                break
-        except (ValueError, TypeError):
-            pass
+    conversions_col: str | None = None
+    revenue_cols: tuple[str, str] | None = None
+    if len(metric_cols) == 1:
+        conversions_col = metric_cols[0]
+        for row in rows:
+            value = _to_float_or_none(row.get(conversions_col))
+            visitors = _to_float_or_none(row.get(visitors_col))
+            if value is None or visitors is None:
+                continue
+            if value != int(value) or value > visitors:
+                raise ValueError(
+                    f"Column '{conversions_col}' looks like revenue, not conversions. ARPU from "
+                    "aggregated data also needs a revenue_sum_squares column to estimate "
+                    "variance; alternatively provide row-level data.\n" + AGGREGATED_LAYOUT_HELP
+                )
+    elif len(metric_cols) == 2:
+        revenue_cols = (metric_cols[0], metric_cols[1])
+    elif len(metric_cols) == 3:
+        conversions_col = metric_cols[0]
+        revenue_cols = (metric_cols[1], metric_cols[2])
+    else:
+        raise ValueError(
+            f"Could not interpret {len(metric_cols)} metric columns ({', '.join(metric_cols)}).\n"
+            + AGGREGATED_LAYOUT_HELP
+        )
 
     primary_metric = defaults.get("primary_metric") or (
-        "conversion_rate" if is_conversion else "arpu"
+        "arpu" if revenue_cols is not None else "conversion_rate"
     )
+    if primary_metric == "arpu" and revenue_cols is None:
+        raise ValueError(
+            "primary_metric 'arpu' needs revenue_sum and revenue_sum_squares columns.\n"
+            + AGGREGATED_LAYOUT_HELP
+        )
+    if primary_metric == "conversion_rate" and conversions_col is None:
+        raise ValueError(
+            "primary_metric 'conversion_rate' needs a conversions column.\n"
+            + AGGREGATED_LAYOUT_HELP
+        )
 
     variants: list[dict[str, Any]] = []
     first_row = True
@@ -197,24 +240,32 @@ def _build_payload_from_aggregated(
         name = str(row.get(variant_col, "")).strip()
         if not name:
             continue
-        if control_col:
-            is_ctrl = _to_bool(row.get(control_col))
-        else:
-            is_ctrl = first_row
+        is_ctrl = _to_bool(row.get(control_col)) if control_col else first_row
         first_row = False
 
-        visitors = _to_int(row.get(visitors_col), visitors_col)
-        variant_obj: dict[str, Any] = {"name": name, "is_control": is_ctrl}
-        if is_conversion:
-            variant_obj["visitors"] = visitors
-            variant_obj["conversions"] = _to_int(row.get(metric_col), metric_col)
-        else:
-            variant_obj["visitors"] = visitors
-            variant_obj["revenue_sum"] = _to_float_or_none(row.get(metric_col))
+        variant_obj: dict[str, Any] = {
+            "name": name,
+            "is_control": is_ctrl,
+            "visitors": _to_int(row.get(visitors_col), visitors_col),
+        }
+        if conversions_col is not None:
+            variant_obj["conversions"] = _to_int(row.get(conversions_col), conversions_col)
+        if revenue_cols is not None:
+            variant_obj["revenue_sum"] = _to_float_or_none(row.get(revenue_cols[0]))
+            variant_obj["revenue_sum_squares"] = _to_float_or_none(row.get(revenue_cols[1]))
         variants.append(variant_obj)
 
+    column_roles: dict[str, str] = {"variant": variant_col, "visitors": visitors_col}
+    if conversions_col:
+        column_roles["conversions"] = conversions_col
+    if revenue_cols:
+        column_roles["revenue_sum"] = revenue_cols[0]
+        column_roles["revenue_sum_squares"] = revenue_cols[1]
+    if control_col:
+        column_roles["is_control"] = control_col
+
     return _build_final_payload(
-        variants, primary_metric, defaults, source_type="aggregated", arpu_approximate=arpu_approximate
+        variants, primary_metric, defaults, source_type="aggregated", column_roles=column_roles
     )
 
 
@@ -223,7 +274,7 @@ def _build_final_payload(
     primary_metric: str,
     defaults: dict[str, Any],
     source_type: str,
-    arpu_approximate: bool,
+    column_roles: dict[str, str],
 ) -> dict[str, Any]:
     return {
         "experiment_name": defaults.get("experiment_name", "table_input_experiment"),
@@ -239,8 +290,8 @@ def _build_final_payload(
         "variants": variants,
         "input_interpretation": {
             "source_type": source_type,
-            "row_count": len(variants),
-            "arpu_approximate": arpu_approximate,
+            "variant_count": len(variants),
+            "column_roles": column_roles,
         },
     }
 
@@ -255,21 +306,45 @@ def build_payload_from_rows(
     return _build_payload_from_aggregated(rows, defaults)
 
 
+_DURATION_FIELDS: dict[str, type] = {
+    "method": str,
+    "baseline_rate": float,
+    "relative_mde": float,
+    "daily_traffic": int,
+    "n_variants": int,
+    "alpha": float,
+    "power": float,
+    "sequential_tau": float,
+    "prob_threshold": float,
+    "max_expected_loss": float,
+    "assurance_target": float,
+    "max_days": int,
+}
+
+
 def build_duration_request_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read duration assumptions from the first row of a table with named columns.
+
+    Only columns that are present and non-empty are returned; callers supply defaults.
+    """
     if not rows:
         raise ValueError("Duration input table is empty.")
-    row = rows[0]
-    return {
-        "method": str(row.get("method", "frequentist")).strip().lower(),
-        "baseline_rate": float(row["baseline_rate"]),
-        "relative_mde": float(row["relative_mde"]),
-        "daily_traffic": int(float(row["daily_traffic"])),
-        "n_variants": int(float(row.get("n_variants", 2))),
-        "alpha": float(row.get("alpha", 0.05)),
-        "power": float(row.get("power", 0.8)),
-        "max_looks": int(float(row.get("max_looks", 10))),
-        "prob_threshold": float(row.get("prob_threshold", 0.95)),
-        "max_expected_loss": float(row.get("max_expected_loss", 0.001)),
-        "assurance_target": float(row.get("assurance_target", 0.8)),
-        "max_days": int(float(row.get("max_days", 60))),
-    }
+    row = {str(k).strip().lower(): v for k, v in rows[0].items() if k is not None}
+    unknown = sorted(k for k in row if k and k not in _DURATION_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"Unknown duration column(s): {', '.join(unknown)}. "
+            f"Expected any of: {', '.join(_DURATION_FIELDS)}."
+        )
+    out: dict[str, Any] = {}
+    for key, kind in _DURATION_FIELDS.items():
+        value = row.get(key)
+        if value is None or value == "":
+            continue
+        if kind is str:
+            out[key] = str(value).strip().lower()
+        elif kind is int:
+            out[key] = int(float(value))
+        else:
+            out[key] = float(value)
+    return out

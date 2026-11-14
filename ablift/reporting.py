@@ -31,8 +31,22 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
         f"  - Treatment {metric_label}: {treatment_display}",
         f"  - Absolute lift: {abs_lift_display}",
         f"  - Relative lift: {_fmt_pct(comp.relative_lift)}",
-        f"  - Interval: [{_fmt_float(comp.ci_low)}, {_fmt_float(comp.ci_high)}]",
     ]
+    if method == "bayesian":
+        lines.append(
+            f"  - 95% credible interval (absolute lift): "
+            f"[{_fmt_float(comp.ci_low)}, {_fmt_float(comp.ci_high)}]"
+        )
+        if comp.relative_ci_low is not None and comp.relative_ci_high is not None:
+            lines.append(
+                f"  - 95% credible interval (relative lift): "
+                f"[{_fmt_pct(comp.relative_ci_low)}, {_fmt_pct(comp.relative_ci_high)}]"
+            )
+    else:
+        lines.append(
+            f"  - Always-valid confidence interval (absolute lift): "
+            f"[{_fmt_float(comp.ci_low)}, {_fmt_float(comp.ci_high)}]"
+        )
 
     if method == "bayesian":
         lines.extend(
@@ -45,7 +59,8 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
         lines.extend(
             [
                 f"  - e-value: {_fmt_float(comp.e_value, 4)}",
-                f"  - e-threshold (1/α): {_fmt_float(comp.e_threshold, 4)}",
+                f"  - e-threshold: {_fmt_float(comp.e_threshold, 4)}",
+                f"  - Always-valid p-value: {_fmt_float(comp.p_value, 6)}",
                 f"  - Significant now: `{comp.significant}`",
             ]
         )
@@ -99,10 +114,29 @@ def build_markdown_report(result: AnalysisResult) -> str:
         "## Summary",
         f"- Method: `{result.method}`",
         f"- Primary metric: `{result.analysis_settings.primary_metric}`",
-        f"- Posterior samples: `{result.analysis_settings.samples}`",
-        f"- Random seed: `{result.analysis_settings.random_seed}`",
-        f"- Priors: `{result.analysis_settings.priors}`",
-        f"- Decision policy: `{result.analysis_settings.decision_policy}`",
+    ]
+    settings = result.analysis_settings
+    if result.method == "bayesian":
+        lines.extend(
+            [
+                f"- Posterior samples: `{settings.samples}`",
+                f"- Random seed: `{settings.random_seed}`",
+                f"- Priors: `{settings.priors}`",
+                f"- Decision policy: `{settings.decision_policy}`",
+            ]
+        )
+    else:
+        mc = settings.multiple_comparisons
+        lines.extend(
+            [
+                f"- Alpha (family-wise): `{settings.alpha}`",
+                f"- Multiple comparisons: `{mc.get('correction')}` across "
+                f"{mc.get('n_comparisons')} comparison(s), "
+                f"alpha per comparison `{mc.get('alpha_per_comparison')}`",
+                f"- mSPRT tau: `{settings.sequential_tau or 'default (10% of control baseline)'}`",
+            ]
+        )
+    lines += [
         f"- Control: `{result.control_variant}`",
         f"- Guardrails passed: `{result.guardrails_passed}`",
         f"- Recommendation: `{recommendation_action}`",

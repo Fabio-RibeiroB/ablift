@@ -12,9 +12,13 @@ import click
 from .connectors import build_duration_request_from_rows, build_payload_from_rows, read_table
 from .engine import analyze as run_analysis
 from .engine import parse_payload
-from .planning import bayesian_duration_conversion, frequentist_duration_conversion
+from .models import SCHEMA_VERSION
+from .planning import (
+    bayesian_duration_conversion,
+    fixed_horizon_duration_conversion,
+    sequential_duration_conversion,
+)
 from .reporting import build_markdown_report
-from .text_parser import parse_duration_prompt
 
 ANALYZE_EPILOG = """\b
 Examples:
@@ -118,27 +122,14 @@ def example_payload() -> dict:
                 "max_relative_change": 0.05,
             },
         ],
-        "decision_thresholds": {
+        "decision_policy": {
+            "enabled": True,
             "bayes_prob_beats_control": 0.95,
             "max_expected_loss": 0.001,
         },
         "samples": 50000,
         "random_seed": 7,
     }
-
-
-
-def example_duration_prompt() -> str:
-    return (
-        "Traffic: 50000 visitors/day\n"
-        "Baseline: 4%\n"
-        "MDE: 5%\n"
-        "Alpha: 0.05\n"
-        "Power: 0.8\n"
-        "Variants: 3\n"
-        "Looks: 10\n"
-    )
-
 
 
 def run_doctor() -> dict:
@@ -182,7 +173,7 @@ def run_doctor() -> dict:
 @click.group()
 @click.version_option(package_name="ablift", prog_name="ablift")
 def cli() -> None:
-    """Agent-friendly CLI for Bayesian and frequentist sequential A/B/n decisions."""
+    """Agent-friendly CLI for Bayesian and sequential (mSPRT) A/B/n experiment decisions."""
 
 
 @cli.command(epilog=ANALYZE_EPILOG)
@@ -303,8 +294,8 @@ def analyze(
             sheet=sheet,
             defaults=defaults,
         )
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"Could not read {input_path}: {exc}") from exc
     if Path(input_path).suffix.lower() in {".csv", ".xlsx", ".xlsm"} and input_payload.get(
         "experiment_name"
     ) in {None, "", "table_input_experiment"}:
@@ -315,75 +306,23 @@ def analyze(
         raise click.ClickException(str(exc)) from exc
 
 
-@cli.command("analyze-file", hidden=True)
-@click.option(
-    "--input", "input_path", required=True, type=click.Path(exists=True), help="Path to CSV/XLSX."
-)
-@click.option("--sheet", required=False, default=None, help="Excel sheet name.")
-@click.option(
-    "--experiment-name", required=False, default=None, help="Optional experiment name override."
-)
+DURATION_EPILOG = """\b
+Examples:
+  ablift duration --method sequential --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000
+  ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3
+  ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.08 --daily-traffic 60000
+  ablift duration --input assumptions.csv
+"""
+
+
+@cli.command(epilog=DURATION_EPILOG)
 @click.option(
     "--method",
-    type=click.Choice(["bayesian", "sequential"]),
+    type=click.Choice(["sequential", "fixed", "bayesian"]),
     default=None,
-    help="Optional method override.",
+    help="Planning model. 'sequential' matches 'analyze --method sequential' (mSPRT). "
+    "[default: sequential]",
 )
-@click.option(
-    "--primary-metric",
-    type=click.Choice(["conversion_rate", "arpu"]),
-    default=None,
-    help="Optional metric override.",
-)
-@click.option(
-    "--output",
-    "output_path",
-    required=False,
-    type=click.Path(),
-    help="Path to output JSON. If omitted, writes to stdout.",
-)
-@click.option(
-    "--report",
-    "report_path",
-    required=False,
-    type=click.Path(),
-    help="Optional path to markdown report output.",
-)
-def analyze_file(
-    input_path: str,
-    sheet: str | None,
-    experiment_name: str | None,
-    method: str | None,
-    primary_metric: str | None,
-    output_path: str | None,
-    report_path: str | None,
-) -> None:
-    """Deprecated alias for analyze on CSV/XLSX input."""
-    click.echo(
-        "Warning: 'analyze-file' is deprecated; use 'analyze --input ...' instead.", err=True
-    )
-    try:
-        input_payload = _load_analysis_payload(
-            input_path=input_path,
-            sheet=sheet,
-            defaults={
-                "experiment_name": experiment_name,
-                "method": method,
-                "primary_metric": primary_metric,
-            },
-        )
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if input_payload.get("experiment_name") in {None, "", "table_input_experiment"}:
-        input_payload["experiment_name"] = Path(input_path).stem
-    try:
-        _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-
-@cli.command()
-@click.option("--method", type=click.Choice(["frequentist", "bayesian"]), default=None)
 @click.option(
     "--baseline-rate",
     type=float,
@@ -394,26 +333,45 @@ def analyze_file(
     "--relative-mde", type=float, default=None, help="Relative MDE, decimal (e.g. 0.05 for +5%)."
 )
 @click.option(
-    "--daily-traffic", type=int, default=None, help="Total daily traffic across variants."
+    "--daily-traffic", type=int, default=None, help="Total daily traffic across all variants."
 )
-@click.option("--n-variants", type=int, default=2, show_default=True)
-@click.option("--alpha", type=float, default=0.05, show_default=True)
-@click.option("--power", type=float, default=0.8, show_default=True)
-@click.option("--max-looks", type=int, default=10, show_default=True)
-@click.option("--prob-threshold", type=float, default=0.95, show_default=True)
-@click.option("--max-expected-loss", type=float, default=0.001, show_default=True)
-@click.option("--assurance-target", type=float, default=0.8, show_default=True)
-@click.option("--max-days", type=int, default=60, show_default=True)
-@click.option("--output", "output_path", required=False, type=click.Path())
 @click.option(
-    "--prompt-text", required=False, default=None, help="Natural-language assumptions text."
+    "--n-variants", type=int, default=None, help="Variants including control. [default: 2]"
 )
+@click.option("--alpha", type=float, default=None, help="Family-wise alpha. [default: 0.05]")
+@click.option("--power", type=float, default=None, help="Target power. [default: 0.8]")
+@click.option(
+    "--sequential-tau",
+    type=float,
+    default=None,
+    help="mSPRT mixing parameter. Defaults to 10% of the baseline rate.",
+)
+@click.option(
+    "--prob-threshold", type=float, default=None, help="Bayesian P(win) threshold. [default: 0.95]"
+)
+@click.option(
+    "--max-expected-loss",
+    type=float,
+    default=None,
+    help="Bayesian expected-loss threshold. [default: 0.001]",
+)
+@click.option(
+    "--assurance-target",
+    type=float,
+    default=None,
+    help="Bayesian probability of reaching a decision. [default: 0.8]",
+)
+@click.option(
+    "--max-days", type=int, default=None, help="Bayesian search horizon in days. [default: 60]"
+)
+@click.option("--output", "output_path", required=False, type=click.Path())
 @click.option(
     "--input",
     "input_path",
     required=False,
     type=click.Path(exists=True),
-    help="CSV/XLSX input for duration assumptions.",
+    help="CSV/XLSX with named columns (baseline_rate, relative_mde, daily_traffic, ...). "
+    "CLI flags override file values.",
 )
 @click.option("--sheet", required=False, default=None, help="Excel sheet name for duration input.")
 def duration(
@@ -421,82 +379,91 @@ def duration(
     baseline_rate: float | None,
     relative_mde: float | None,
     daily_traffic: int | None,
-    n_variants: int,
-    alpha: float,
-    power: float,
-    max_looks: int,
-    prob_threshold: float,
-    max_expected_loss: float,
-    assurance_target: float,
-    max_days: int,
+    n_variants: int | None,
+    alpha: float | None,
+    power: float | None,
+    sequential_tau: float | None,
+    prob_threshold: float | None,
+    max_expected_loss: float | None,
+    assurance_target: float | None,
+    max_days: int | None,
     output_path: str | None,
-    prompt_text: str | None,
     input_path: str | None,
     sheet: str | None,
 ) -> None:
-    """Estimate test duration from assumptions."""
-    if input_path:
-        rows = read_table(input_path, sheet=sheet)
-        file_req = build_duration_request_from_rows(rows)
-        method = method or file_req["method"]
-        baseline_rate = baseline_rate if baseline_rate is not None else file_req["baseline_rate"]
-        relative_mde = relative_mde if relative_mde is not None else file_req["relative_mde"]
-        daily_traffic = daily_traffic if daily_traffic is not None else file_req["daily_traffic"]
-        n_variants = file_req["n_variants"]
-        alpha = file_req["alpha"]
-        power = file_req["power"]
-        max_looks = file_req["max_looks"]
-        prob_threshold = file_req["prob_threshold"]
-        max_expected_loss = file_req["max_expected_loss"]
-        assurance_target = file_req["assurance_target"]
-        max_days = file_req["max_days"]
+    """Estimate how long a conversion-rate test needs to run."""
+    flags = {
+        "method": method,
+        "baseline_rate": baseline_rate,
+        "relative_mde": relative_mde,
+        "daily_traffic": daily_traffic,
+        "n_variants": n_variants,
+        "alpha": alpha,
+        "power": power,
+        "sequential_tau": sequential_tau,
+        "prob_threshold": prob_threshold,
+        "max_expected_loss": max_expected_loss,
+        "assurance_target": assurance_target,
+        "max_days": max_days,
+    }
+    req: dict[str, Any] = {
+        "method": "sequential",
+        "n_variants": 2,
+        "alpha": 0.05,
+        "power": 0.8,
+        "prob_threshold": 0.95,
+        "max_expected_loss": 0.001,
+        "assurance_target": 0.8,
+        "max_days": 60,
+    }
+    try:
+        if input_path:
+            req.update(build_duration_request_from_rows(read_table(input_path, sheet=sheet)))
+        req.update({k: v for k, v in flags.items() if v is not None})
 
-    if prompt_text:
-        parsed = parse_duration_prompt(prompt_text)
-        method = method or "frequentist"
-        baseline_rate = baseline_rate if baseline_rate is not None else parsed["baseline_rate"]
-        relative_mde = relative_mde if relative_mde is not None else parsed["relative_mde"]
-        daily_traffic = (
-            daily_traffic if daily_traffic is not None else parsed["daily_total_traffic"]
-        )
-        alpha = alpha if alpha is not None else parsed["alpha"]
-        power = power if power is not None else parsed["power"]
-        n_variants = n_variants if n_variants is not None else parsed["n_variants"]
-        max_looks = max_looks if max_looks is not None else parsed["max_looks"]
+        missing = [
+            f"--{k.replace('_', '-')}"
+            for k in ("baseline_rate", "relative_mde", "daily_traffic")
+            if req.get(k) is None
+        ]
+        if missing:
+            raise click.UsageError(f"Missing required assumptions: {', '.join(missing)}.")
 
-    if not method:
-        method = click.prompt("Method", type=click.Choice(["frequentist", "bayesian"]))
-    if baseline_rate is None:
-        baseline_rate = click.prompt("Baseline conversion rate (decimal, e.g. 0.04)", type=float)
-    if relative_mde is None:
-        relative_mde = click.prompt("Relative MDE (decimal, e.g. 0.05)", type=float)
-    if daily_traffic is None:
-        daily_traffic = click.prompt("Total daily traffic", type=int)
-
-    if method == "frequentist":
-        plan = frequentist_duration_conversion(
-            baseline_rate=baseline_rate,
-            relative_mde=relative_mde,
-            daily_total_traffic=daily_traffic,
-            n_variants=n_variants,
-            alpha=alpha,
-            power=power,
-            max_looks=max_looks,
-        )
-    else:
-        plan = bayesian_duration_conversion(
-            baseline_rate=baseline_rate,
-            relative_mde=relative_mde,
-            daily_total_traffic=daily_traffic,
-            n_variants=n_variants,
-            prob_threshold=prob_threshold,
-            max_expected_loss=max_expected_loss,
-            assurance_target=assurance_target,
-            max_days=max_days,
-        )
+        common = {
+            "baseline_rate": req["baseline_rate"],
+            "relative_mde": req["relative_mde"],
+            "daily_total_traffic": req["daily_traffic"],
+            "n_variants": req["n_variants"],
+        }
+        if req["method"] == "sequential":
+            plan = sequential_duration_conversion(
+                **common,
+                alpha=req["alpha"],
+                power=req["power"],
+                sequential_tau=req.get("sequential_tau"),
+            )
+        elif req["method"] == "fixed":
+            plan = fixed_horizon_duration_conversion(
+                **common, alpha=req["alpha"], power=req["power"]
+            )
+        elif req["method"] == "bayesian":
+            plan = bayesian_duration_conversion(
+                **common,
+                prob_threshold=req["prob_threshold"],
+                max_expected_loss=req["max_expected_loss"],
+                assurance_target=req["assurance_target"],
+                max_days=req["max_days"],
+            )
+        else:
+            raise click.UsageError(
+                f"Unknown method '{req['method']}'. Use sequential, fixed, or bayesian."
+            )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     plan_json = json.dumps(
         {
+            "schema_version": SCHEMA_VERSION,
             "method": plan.method,
             "estimated_days": plan.estimated_days,
             "n_per_variant": plan.n_per_variant,
@@ -537,12 +504,6 @@ def doctor(strict: bool, json_output: bool) -> None:
 def example_input() -> None:
     """Print an example input JSON to stdout."""
     click.echo(json.dumps(example_payload(), indent=2))
-
-
-@cli.command("example-duration-prompt")
-def example_duration_prompt_cmd() -> None:
-    """Print a duration prompt text example."""
-    click.echo(example_duration_prompt(), nl=False)
 
 
 if __name__ == "__main__":
