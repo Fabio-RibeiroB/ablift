@@ -12,12 +12,19 @@ def read_table(path: str, sheet: str | None = None) -> list[dict[str, Any]]:
     suffix = p.suffix.lower()
 
     if suffix == ".csv":
-        with p.open("r", encoding="utf-8", newline="") as f:
-            return list(csv.DictReader(f))
+        # utf-8-sig strips the byte-order mark Excel adds when saving "CSV UTF-8".
+        with p.open("r", encoding="utf-8-sig", newline="") as f:
+            return [row for row in csv.DictReader(f) if not _is_blank_row(row)]
 
     if suffix in {".xlsx", ".xlsm"}:
         wb = load_workbook(filename=path, read_only=True, data_only=True)
+        if sheet is not None and sheet not in wb.sheetnames:
+            raise ValueError(
+                f"Sheet '{sheet}' not found. Available sheets: {', '.join(wb.sheetnames)}."
+            )
         ws = wb[sheet] if sheet else wb.active
+        if ws is None:
+            raise ValueError("Workbook has no active sheet; pass --sheet.")
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             return []
@@ -29,22 +36,33 @@ def read_table(path: str, sheet: str | None = None) -> list[dict[str, Any]]:
                 if not key:
                     continue
                 obj[key] = row[i] if i < len(row) else None
-            out.append(obj)
+            if not _is_blank_row(obj):
+                out.append(obj)
         return out
 
     raise ValueError("Unsupported file type. Use .csv or .xlsx/.xlsm")
 
 
+def _is_blank_row(row: dict[str, Any]) -> bool:
+    return all(v is None or str(v).strip() == "" for v in row.values())
+
+
 def _to_int(value: Any, field_name: str) -> int:
     if value is None or value == "":
         raise ValueError(f"Missing required integer field '{field_name}'.")
-    return int(float(value))
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        raise ValueError(f"Column '{field_name}' must be numeric, got {value!r}.") from None
 
 
-def _to_float_or_none(value: Any) -> float | None:
+def _to_float_or_none(value: Any, field_name: str = "value") -> float | None:
     if value is None or value == "":
         return None
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Column '{field_name}' must be numeric, got {value!r}.") from None
 
 
 def _to_bool(value: Any) -> bool:
@@ -199,8 +217,8 @@ def _build_payload_from_aggregated(
     if len(metric_cols) == 1:
         conversions_col = metric_cols[0]
         for row in rows:
-            value = _to_float_or_none(row.get(conversions_col))
-            visitors = _to_float_or_none(row.get(visitors_col))
+            value = _to_float_or_none(row.get(conversions_col), conversions_col)
+            visitors = _to_float_or_none(row.get(visitors_col), visitors_col)
             if value is None or visitors is None:
                 continue
             if value != int(value) or value > visitors:
@@ -251,8 +269,12 @@ def _build_payload_from_aggregated(
         if conversions_col is not None:
             variant_obj["conversions"] = _to_int(row.get(conversions_col), conversions_col)
         if revenue_cols is not None:
-            variant_obj["revenue_sum"] = _to_float_or_none(row.get(revenue_cols[0]))
-            variant_obj["revenue_sum_squares"] = _to_float_or_none(row.get(revenue_cols[1]))
+            variant_obj["revenue_sum"] = _to_float_or_none(
+                row.get(revenue_cols[0]), revenue_cols[0]
+            )
+            variant_obj["revenue_sum_squares"] = _to_float_or_none(
+                row.get(revenue_cols[1]), revenue_cols[1]
+            )
         variants.append(variant_obj)
 
     column_roles: dict[str, str] = {"variant": variant_col, "visitors": visitors_col}

@@ -167,6 +167,20 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     )
 
 
+def chi2_survival(x: float, df: int) -> float:
+    """Exact upper-tail probability of a chi-square distribution with integer ``df``."""
+    if x <= 0:
+        return 1.0
+    half = x / 2.0
+    if df % 2 == 0:
+        terms = (i * math.log(half) - math.lgamma(i + 1) for i in range(df // 2))
+        tail = 0.0
+    else:
+        terms = ((i - 0.5) * math.log(half) - math.lgamma(i + 0.5) for i in range(1, (df + 1) // 2))
+        tail = math.erfc(math.sqrt(half))
+    return min(1.0, tail + sum(math.exp(t - half) for t in terms))
+
+
 def evaluate_srm(variants: list[VariantInput]) -> SrmResult:
     observed = [v.visitors for v in variants]
     total = float(sum(observed))
@@ -178,11 +192,7 @@ def evaluate_srm(variants: list[VariantInput]) -> SrmResult:
         if exp > 0:
             chi2 += ((obs - exp) ** 2) / exp
 
-    # Wilson-Hilferty approximation for chi-square upper-tail p-value.
-    df = max(k - 1, 1)
-    x = max(chi2 / df, 1e-12)
-    z = ((x ** (1 / 3)) - (1 - 2 / (9 * df))) / math.sqrt(2 / (9 * df))
-    p_value = 1 - NormalDist().cdf(z)
+    p_value = chi2_survival(chi2, max(k - 1, 1))
     passed = p_value >= 0.001
     reason = "No strong SRM evidence." if passed else "Potential sample ratio mismatch detected."
 
@@ -466,8 +476,10 @@ def _sequential_comparison(
         e_value=float(e_val),
         e_threshold=float(1.0 / alpha_adj),
         significant=bool(e_val >= 1.0 / alpha_adj),
-        ci_low=float(diff - margin),
-        ci_high=float(diff + margin),
+        # An infinite margin means the variance could not be estimated; report no interval
+        # rather than +/-inf, which is not valid JSON.
+        ci_low=float(diff - margin) if math.isfinite(margin) else None,
+        ci_high=float(diff + margin) if math.isfinite(margin) else None,
     )
 
 
@@ -478,7 +490,7 @@ def analyze_sequential_conversion(
     control_rate = control.conversions / control.visitors
     out: list[ComparisonResult] = []
     for treatment in treatments:
-        _, _, se = two_proportion_test(
+        se = adjusted_difference_se(
             control.conversions,
             control.visitors,
             treatment.conversions,
@@ -515,7 +527,12 @@ def analyze_sequential_arpu(
             float(treatment.revenue_sum or 0.0),
             float(treatment.revenue_sum_squares or 0.0),
         )
-        se = math.sqrt(max((c_var / control.visitors) + (t_var / treatment.visitors), 1e-18))
+        # With fewer than 2 users in an arm the variance cannot be estimated; se=0 makes the
+        # mSPRT report "no evidence" rather than certainty.
+        if control.visitors < 2 or treatment.visitors < 2:
+            se = 0.0
+        else:
+            se = math.sqrt(max((c_var / control.visitors) + (t_var / treatment.visitors), 1e-18))
         out.append(
             _sequential_comparison(
                 inp=inp,
@@ -529,6 +546,18 @@ def analyze_sequential_arpu(
             )
         )
     return out
+
+
+def adjusted_difference_se(x1: int, n1: int, x2: int, n2: int) -> float:
+    """Agresti-Caffo standard error for a difference in proportions.
+
+    Adds one success and one failure to each arm before estimating the variance, so arms
+    with 0% or 100% conversion (common at tiny sample sizes) never yield a zero standard
+    error. For realistic sample sizes it is indistinguishable from the unpooled SE.
+    """
+    p1 = (x1 + 1) / (n1 + 2)
+    p2 = (x2 + 1) / (n2 + 2)
+    return math.sqrt(p1 * (1 - p1) / (n1 + 2) + p2 * (1 - p2) / (n2 + 2))
 
 
 def two_proportion_test(x1: int, n1: int, x2: int, n2: int) -> tuple[float, float, float]:

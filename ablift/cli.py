@@ -74,6 +74,8 @@ def _load_analysis_payload(
     suffix = Path(input_path).suffix.lower()
     if suffix == ".json":
         input_payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        if not isinstance(input_payload, dict):
+            raise ValueError("JSON input must be an object with a 'variants' list.")
         payload = _deep_merge(config_payload, _deep_merge(input_payload, defaults))
         payload.setdefault("input_interpretation", {"source_type": "json"})
         return payload
