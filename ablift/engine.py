@@ -21,11 +21,22 @@ from .models import (
 
 
 def parse_payload(payload: dict) -> AnalysisInput:
+    try:
+        return _parse_payload(payload)
+    except KeyError as exc:
+        raise ValueError(f"Input is missing required field {exc}.") from exc
+    except TypeError as exc:
+        raise ValueError(f"Invalid input structure: {exc}") from exc
+
+
+def _parse_payload(payload: dict) -> AnalysisInput:
+    if not isinstance(payload, dict):
+        raise ValueError("Input must be a JSON object.")
     variants = [VariantInput(**row) for row in payload["variants"]]
-    guardrails = [GuardrailInput(**row) for row in payload.get("guardrails", [])]
+    guardrails = [GuardrailInput(**row) for row in payload.get("guardrails") or []]
     decision_policy_payload = payload.get("decision_policy")
     threshold_payload = payload.get("decision_thresholds")
-    method = payload["method"]
+    method = payload.get("method") or "bayesian"
 
     if decision_policy_payload is not None:
         enabled = bool(decision_policy_payload.get("enabled", True))
@@ -55,7 +66,7 @@ def parse_payload(payload: dict) -> AnalysisInput:
         )
 
     return AnalysisInput(
-        experiment_name=payload["experiment_name"],
+        experiment_name=payload.get("experiment_name") or "experiment",
         method=method,
         variants=variants,
         primary_metric=payload.get("primary_metric", "conversion_rate"),
@@ -91,6 +102,11 @@ def validate_input(inp: AnalysisInput) -> None:
 
     if inp.alpha <= 0 or inp.alpha >= 1:
         raise ValueError("alpha must be in (0, 1).")
+
+    if inp.sequential_tau is not None and inp.sequential_tau <= 0:
+        raise ValueError("sequential_tau must be positive.")
+    if inp.samples <= 0:
+        raise ValueError("samples must be positive.")
 
     if inp.method not in {"bayesian", "sequential"}:
         raise ValueError("method must be 'bayesian' or 'sequential'.")
@@ -151,6 +167,20 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     )
 
 
+def chi2_survival(x: float, df: int) -> float:
+    """Exact upper-tail probability of a chi-square distribution with integer ``df``."""
+    if x <= 0:
+        return 1.0
+    half = x / 2.0
+    if df % 2 == 0:
+        terms = (i * math.log(half) - math.lgamma(i + 1) for i in range(df // 2))
+        tail = 0.0
+    else:
+        terms = ((i - 0.5) * math.log(half) - math.lgamma(i + 0.5) for i in range(1, (df + 1) // 2))
+        tail = math.erfc(math.sqrt(half))
+    return min(1.0, tail + sum(math.exp(t - half) for t in terms))
+
+
 def evaluate_srm(variants: list[VariantInput]) -> SrmResult:
     observed = [v.visitors for v in variants]
     total = float(sum(observed))
@@ -162,11 +192,7 @@ def evaluate_srm(variants: list[VariantInput]) -> SrmResult:
         if exp > 0:
             chi2 += ((obs - exp) ** 2) / exp
 
-    # Wilson-Hilferty approximation for chi-square upper-tail p-value.
-    df = max(k - 1, 1)
-    x = max(chi2 / df, 1e-12)
-    z = ((x ** (1 / 3)) - (1 - 2 / (9 * df))) / math.sqrt(2 / (9 * df))
-    p_value = 1 - NormalDist().cdf(z)
+    p_value = chi2_survival(chi2, max(k - 1, 1))
     passed = p_value >= 0.001
     reason = "No strong SRM evidence." if passed else "Potential sample ratio mismatch detected."
 
@@ -262,8 +288,10 @@ def analyze_bayesian_conversion(
                 relative_lift=(treatment_rate - control_rate) / max(control_rate, 1e-12),
                 probability_beats_control=p_win,
                 expected_loss=expected_loss,
-                ci_low=float(np.quantile(rel_samples, 0.025)),
-                ci_high=float(np.quantile(rel_samples, 0.975)),
+                ci_low=float(np.quantile(diff_samples, 0.025)),
+                ci_high=float(np.quantile(diff_samples, 0.975)),
+                relative_ci_low=float(np.quantile(rel_samples, 0.025)),
+                relative_ci_high=float(np.quantile(rel_samples, 0.975)),
             )
         )
 
@@ -304,9 +332,20 @@ def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
             },
         }
 
+    n_comparisons = sum(1 for v in inp.variants if not v.is_control)
+    if inp.method == "sequential":
+        multiple_comparisons = {
+            "correction": "bonferroni",
+            "n_comparisons": n_comparisons,
+            "alpha_per_comparison": per_comparison_alpha(inp.alpha, n_comparisons),
+        }
+    else:
+        multiple_comparisons = {"correction": "none", "n_comparisons": n_comparisons}
+
     return AnalysisSettings(
         primary_metric=inp.primary_metric,
         alpha=inp.alpha,
+        multiple_comparisons=multiple_comparisons,
         sequential_tau=inp.sequential_tau,
         samples=inp.samples,
         random_seed=inp.random_seed,
@@ -362,8 +401,10 @@ def analyze_bayesian_arpu(
                 relative_lift=(treatment_arpu - control_arpu) / max(control_arpu, 1e-12),
                 probability_beats_control=p_win,
                 expected_loss=expected_loss,
-                ci_low=float(np.quantile(rel_samples, 0.025)),
-                ci_high=float(np.quantile(rel_samples, 0.975)),
+                ci_low=float(np.quantile(diff_samples, 0.025)),
+                ci_high=float(np.quantile(diff_samples, 0.975)),
+                relative_ci_low=float(np.quantile(rel_samples, 0.025)),
+                relative_ci_high=float(np.quantile(rel_samples, 0.975)),
             )
         )
 
@@ -375,7 +416,7 @@ def _default_tau(baseline: float) -> float:
     return max(abs(baseline) * 0.1, 1e-6)
 
 
-def msrpt_statistic(delta_hat: float, se: float, tau: float) -> float:
+def msprt_statistic(delta_hat: float, se: float, tau: float) -> float:
     """mSPRT likelihood ratio statistic (Johari et al. 2017).
 
     Reject H0 when this exceeds 1/alpha.
@@ -402,57 +443,83 @@ def always_valid_ci_margin(se: float, tau: float, alpha: float) -> float:
     return se * math.sqrt((1.0 + rho2) / rho2 * 2.0 * math.log(inner))
 
 
+def per_comparison_alpha(alpha: float, n_comparisons: int) -> float:
+    """Bonferroni-adjusted alpha so the family-wise error rate stays at ``alpha``."""
+    return alpha / max(n_comparisons, 1)
+
+
+def _sequential_comparison(
+    *,
+    inp: AnalysisInput,
+    control: VariantInput,
+    treatment: VariantInput,
+    metric: str,
+    control_value: float,
+    treatment_value: float,
+    se: float,
+    alpha_adj: float,
+) -> ComparisonResult:
+    diff = treatment_value - control_value
+    tau = inp.sequential_tau if inp.sequential_tau is not None else _default_tau(control_value)
+    e_val = msprt_statistic(diff, se, tau)
+    margin = always_valid_ci_margin(se, tau, alpha_adj)
+    p_value = min(1.0, 1.0 / e_val) if e_val > 0 else 1.0
+    return ComparisonResult(
+        treatment=treatment.name,
+        control=control.name,
+        metric=metric,
+        control_rate=control_value,
+        treatment_rate=treatment_value,
+        absolute_lift=diff,
+        relative_lift=diff / max(abs(control_value), 1e-12),
+        p_value=float(p_value),
+        e_value=float(e_val),
+        e_threshold=float(1.0 / alpha_adj),
+        significant=bool(e_val >= 1.0 / alpha_adj),
+        # An infinite margin means the variance could not be estimated; report no interval
+        # rather than +/-inf, which is not valid JSON.
+        ci_low=float(diff - margin) if math.isfinite(margin) else None,
+        ci_high=float(diff + margin) if math.isfinite(margin) else None,
+    )
+
+
 def analyze_sequential_conversion(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
 ) -> list[ComparisonResult]:
-    e_threshold = 1.0 / inp.alpha
+    alpha_adj = per_comparison_alpha(inp.alpha, len(treatments))
     control_rate = control.conversions / control.visitors
-
     out: list[ComparisonResult] = []
     for treatment in treatments:
-        _, _, se = two_proportion_test(
+        se = adjusted_difference_se(
             control.conversions,
             control.visitors,
             treatment.conversions,
             treatment.visitors,
         )
-        treatment_rate = treatment.conversions / treatment.visitors
-        diff = treatment_rate - control_rate
-        tau = inp.sequential_tau if inp.sequential_tau is not None else _default_tau(control_rate)
-
-        e_val = msrpt_statistic(diff, se, tau)
-        margin = always_valid_ci_margin(se, tau, inp.alpha)
-
         out.append(
-            ComparisonResult(
-                treatment=treatment.name,
-                control=control.name,
+            _sequential_comparison(
+                inp=inp,
+                control=control,
+                treatment=treatment,
                 metric="conversion_rate",
-                control_rate=control_rate,
-                treatment_rate=treatment_rate,
-                absolute_lift=diff,
-                relative_lift=diff / max(control_rate, 1e-12),
-                e_value=float(e_val),
-                e_threshold=float(e_threshold),
-                significant=bool(e_val >= e_threshold),
-                ci_low=float(diff - margin),
-                ci_high=float(diff + margin),
+                control_value=control_rate,
+                treatment_value=treatment.conversions / treatment.visitors,
+                se=se,
+                alpha_adj=alpha_adj,
             )
         )
-
     return out
 
 
 def analyze_sequential_arpu(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
 ) -> list[ComparisonResult]:
-    e_threshold = 1.0 / inp.alpha
+    alpha_adj = per_comparison_alpha(inp.alpha, len(treatments))
     c_mean, c_var = mean_and_var_from_aggregates(
         control.visitors,
         float(control.revenue_sum or 0.0),
         float(control.revenue_sum_squares or 0.0),
     )
-
     out: list[ComparisonResult] = []
     for treatment in treatments:
         t_mean, t_var = mean_and_var_from_aggregates(
@@ -460,31 +527,37 @@ def analyze_sequential_arpu(
             float(treatment.revenue_sum or 0.0),
             float(treatment.revenue_sum_squares or 0.0),
         )
-        se = math.sqrt(max((c_var / control.visitors) + (t_var / treatment.visitors), 1e-18))
-        diff = t_mean - c_mean
-        tau = inp.sequential_tau if inp.sequential_tau is not None else _default_tau(c_mean)
-
-        e_val = msrpt_statistic(diff, se, tau)
-        margin = always_valid_ci_margin(se, tau, inp.alpha)
-
+        # With fewer than 2 users in an arm the variance cannot be estimated; se=0 makes the
+        # mSPRT report "no evidence" rather than certainty.
+        if control.visitors < 2 or treatment.visitors < 2:
+            se = 0.0
+        else:
+            se = math.sqrt(max((c_var / control.visitors) + (t_var / treatment.visitors), 1e-18))
         out.append(
-            ComparisonResult(
-                treatment=treatment.name,
-                control=control.name,
+            _sequential_comparison(
+                inp=inp,
+                control=control,
+                treatment=treatment,
                 metric="arpu",
-                control_rate=c_mean,
-                treatment_rate=t_mean,
-                absolute_lift=diff,
-                relative_lift=diff / max(c_mean, 1e-12),
-                e_value=float(e_val),
-                e_threshold=float(e_threshold),
-                significant=bool(e_val >= e_threshold),
-                ci_low=float(diff - margin),
-                ci_high=float(diff + margin),
+                control_value=c_mean,
+                treatment_value=t_mean,
+                se=se,
+                alpha_adj=alpha_adj,
             )
         )
-
     return out
+
+
+def adjusted_difference_se(x1: int, n1: int, x2: int, n2: int) -> float:
+    """Agresti-Caffo standard error for a difference in proportions.
+
+    Adds one success and one failure to each arm before estimating the variance, so arms
+    with 0% or 100% conversion (common at tiny sample sizes) never yield a zero standard
+    error. For realistic sample sizes it is indistinguishable from the unpooled SE.
+    """
+    p1 = (x1 + 1) / (n1 + 2)
+    p2 = (x2 + 1) / (n2 + 2)
+    return math.sqrt(p1 * (1 - p1) / (n1 + 2) + p2 * (1 - p2) / (n2 + 2))
 
 
 def two_proportion_test(x1: int, n1: int, x2: int, n2: int) -> tuple[float, float, float]:
@@ -556,7 +629,7 @@ def recommend(
         return Recommendation(
             action="investigate_data_quality",
             rationale="SRM check failed; assignment or tracking may be biased.",
-            decision_confidence=0.99,
+            decision_confidence=float(1.0 - srm.p_value),
             next_best_action="Audit randomization, traffic filters, and event logging before shipping.",
             risk_flags=risk_flags,
         )
@@ -565,7 +638,8 @@ def recommend(
         return Recommendation(
             action="do_not_ship",
             rationale="One or more guardrails failed. Keep test running or roll back.",
-            decision_confidence=0.95,
+            # Guardrails are deterministic threshold rules, not statistical tests.
+            decision_confidence=1.0,
             next_best_action="Fix guardrail regressions or reduce impact before re-testing.",
             risk_flags=risk_flags,
         )
@@ -624,34 +698,48 @@ def recommend(
             risk_flags=risk_flags,
         )
 
-    if best.significant and best.absolute_lift > 0:
+    winners = [c for c in comparisons if c.significant and c.absolute_lift > 0]
+    losers = [c for c in comparisons if c.significant and c.absolute_lift < 0]
+
+    if winners:
+        winner = max(winners, key=lambda x: x.absolute_lift)
+        flags = risk_flags + (["other_variant_significantly_worse"] if losers else [])
         return Recommendation(
-            action=f"ship_{best.treatment}",
+            action=f"ship_{winner.treatment}",
             rationale=(
-                f"mSPRT significance reached for {best.treatment} "
-                f"(e-value={best.e_value:.3f} >= threshold={best.e_threshold:.1f})."
+                f"mSPRT significance reached for {winner.treatment} "
+                f"(e-value={winner.e_value:.3f} >= threshold={winner.e_threshold:.1f})."
             ),
-            decision_confidence=0.95,
+            decision_confidence=float(1.0 - (winner.p_value or 0.0)),
             next_best_action="Roll out gradually and continue guardrail monitoring.",
-            risk_flags=risk_flags,
+            risk_flags=flags,
         )
 
-    if best.significant and best.absolute_lift < 0:
+    if losers and len(losers) == len(comparisons):
+        worst = min(losers, key=lambda x: x.absolute_lift)
         return Recommendation(
             action="stop_and_rollback",
             rationale=(
-                f"Significant negative lift detected (e-value={best.e_value:.3f} "
-                f">= threshold={best.e_threshold:.1f})."
+                f"Significant negative lift detected for every treatment "
+                f"(worst: {worst.treatment}, e-value={worst.e_value:.3f} "
+                f">= threshold={worst.e_threshold:.1f})."
             ),
-            decision_confidence=0.95,
-            next_best_action="Rollback treatment and investigate adverse drivers.",
+            decision_confidence=float(1.0 - max(c.p_value or 0.0 for c in losers)),
+            next_best_action="Roll back treatments and investigate adverse drivers.",
             risk_flags=risk_flags,
         )
 
+    if losers:
+        risk_flags = risk_flags + ["some_variants_significantly_worse"]
+
+    best_p = min((c.p_value for c in comparisons if c.p_value is not None), default=1.0)
     return Recommendation(
         action="continue_collecting_data",
-        rationale="mSPRT significance threshold not reached yet — safe to keep looking.",
-        decision_confidence=0.5,
-        next_best_action="Collect more data; the always-valid test controls error rate at any sample size.",
+        rationale="mSPRT significance threshold not reached yet; it is safe to keep looking.",
+        decision_confidence=float(best_p),
+        next_best_action=(
+            "Collect more data and re-run; the always-valid test controls the error rate "
+            "no matter how often you look."
+        ),
         risk_flags=risk_flags,
     )

@@ -48,20 +48,72 @@ class AnalyzeCliTests(unittest.TestCase):
             payload["analysis_settings"]["input_interpretation"]["source_type"], "aggregated"
         )
 
-    def test_analyze_file_alias_still_works(self):
+    def test_output_includes_schema_version(self):
         runner = CliRunner()
-
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / "input.csv"
-            input_path.write_text(
-                "variant_name,sessions,orders\ncontrol,1000,40\nv1,1000,45\n",
-                encoding="utf-8",
-            )
-            result = runner.invoke(cli, ["analyze-file", "--input", str(input_path)])
-
+            input_path.write_text("v,n,c\ncontrol,1000,40\nv1,1000,45\n", encoding="utf-8")
+            result = runner.invoke(cli, ["analyze", "--input", str(input_path)])
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("deprecated", result.output.lower())
+        self.assertEqual(json.loads(result.output)["schema_version"], "1")
 
+    def test_invalid_json_gives_clean_error(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "input.json"
+            input_path.write_text('{"method": "bayesian"}', encoding="utf-8")
+            result = runner.invoke(cli, ["analyze", "--input", str(input_path)])
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("variants", result.output)
+        self.assertNotIn("Traceback", result.output)
+
+    def test_bundled_examples_analyze(self):
+        root = Path(__file__).resolve().parents[1] / "examples"
+        runner = CliRunner()
+        cases = [
+            ("conversion_multivariant.csv", "conversion_rate", []),
+            ("arpu_bayesian.csv", "arpu", []),
+            ("arpu_bayesian.xlsx", "arpu", ["--sheet", "Sheet1"]),
+            ("arpu_sequential.csv", "arpu", ["--method", "sequential"]),
+        ]
+        for name, metric, extra in cases:
+            result = runner.invoke(
+                cli, ["analyze", "--input", str(root / name), "--samples", "2000", *extra]
+            )
+            self.assertEqual(result.exit_code, 0, f"{name}: {result.output}")
+            payload = json.loads(result.output)
+            self.assertEqual(payload["analysis_settings"]["primary_metric"], metric, name)
+
+
+class DurationCliTests(unittest.TestCase):
+    def test_missing_assumptions_error_instead_of_prompt(self):
+        result = CliRunner().invoke(cli, ["duration", "--baseline-rate", "0.04"], input="")
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("--relative-mde", result.output)
+        self.assertIn("--daily-traffic", result.output)
+
+    def test_sequential_is_default_and_longer_than_fixed(self):
+        args = ["--baseline-rate", "0.04", "--relative-mde", "0.05", "--daily-traffic", "50000"]
+        seq = CliRunner().invoke(cli, ["duration", *args])
+        fixed = CliRunner().invoke(cli, ["duration", "--method", "fixed", *args])
+        self.assertEqual(seq.exit_code, 0, seq.output)
+        self.assertEqual(fixed.exit_code, 0, fixed.output)
+        seq_plan, fixed_plan = json.loads(seq.output), json.loads(fixed.output)
+        self.assertEqual(seq_plan["method"], "sequential")
+        self.assertGreater(seq_plan["n_per_variant"], fixed_plan["n_per_variant"])
+
+    def test_bundled_duration_examples(self):
+        root = Path(__file__).resolve().parents[1] / "examples"
+        for args in (
+            ["--input", str(root / "duration_inputs.csv")],
+            ["--input", str(root / "duration_inputs.xlsx"), "--sheet", "Sheet1"],
+        ):
+            result = CliRunner().invoke(cli, ["duration", *args])
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIsNotNone(json.loads(result.output)["n_per_variant"])
+
+
+class AnalyzeConfigTests(unittest.TestCase):
     def test_analyze_uses_explicit_config_for_recommendation_policy(self):
         runner = CliRunner()
 

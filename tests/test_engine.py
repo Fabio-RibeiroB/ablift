@@ -1,6 +1,7 @@
 import math
 import unittest
 
+import numpy as np
 from scipy.stats import chi2
 from statsmodels.stats.proportion import proportions_ztest
 
@@ -9,7 +10,7 @@ from ablift.engine import (
     analyze,
     evaluate_srm,
     mean_and_var_from_aggregates,
-    msrpt_statistic,
+    msprt_statistic,
     parse_payload,
     two_proportion_test,
 )
@@ -205,16 +206,16 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(comp.ci_high)
         self.assertGreater(comp.ci_low, 0)  # always-valid CI excludes zero for clear winner
 
-    def test_msrpt_statistic_increases_with_effect_size(self):
+    def test_msprt_statistic_increases_with_effect_size(self):
         # Larger effect → higher e-value
-        small = msrpt_statistic(delta_hat=0.001, se=0.01, tau=0.005)
-        large = msrpt_statistic(delta_hat=0.05, se=0.01, tau=0.005)
+        small = msprt_statistic(delta_hat=0.001, se=0.01, tau=0.005)
+        large = msprt_statistic(delta_hat=0.05, se=0.01, tau=0.005)
         self.assertGreater(large, small)
 
     def test_always_valid_ci_wider_than_standard(self):
         # Always-valid CI should be wider than a standard 95% CI at the same alpha
-        import math
         from statistics import NormalDist
+
         se = 0.01
         tau = 0.005
         alpha = 0.05
@@ -231,6 +232,85 @@ class EngineTests(unittest.TestCase):
 
         self.assertAlmostEqual(mean, 3.5)
         self.assertAlmostEqual(variance, 5 / 3)
+
+
+class SequentialGuaranteeTests(unittest.TestCase):
+    def _payload(self, variants, **extra):
+        return {"experiment_name": "exp", "method": "sequential", "variants": variants, **extra}
+
+    def test_bonferroni_threshold_scales_with_treatments(self):
+        variants = [
+            {"name": "control", "visitors": 10000, "conversions": 400, "is_control": True},
+            {"name": "v1", "visitors": 10000, "conversions": 410},
+            {"name": "v2", "visitors": 10000, "conversions": 420},
+        ]
+        result = analyze(parse_payload(self._payload(variants)))
+        for comp in result.comparisons:
+            self.assertAlmostEqual(comp.e_threshold, 40.0)  # 1 / (0.05 / 2)
+        mc = result.analysis_settings.multiple_comparisons
+        self.assertEqual(mc["correction"], "bonferroni")
+        self.assertAlmostEqual(mc["alpha_per_comparison"], 0.025)
+
+    def test_p_value_is_inverse_e_value_and_matches_ci(self):
+        for treat_conv in (400, 430, 470, 520):
+            variants = [
+                {"name": "control", "visitors": 20000, "conversions": 400, "is_control": True},
+                {"name": "v1", "visitors": 20000, "conversions": treat_conv},
+            ]
+            comp = analyze(parse_payload(self._payload(variants))).comparisons[0]
+            self.assertAlmostEqual(comp.p_value, min(1.0, 1.0 / comp.e_value))
+            # Always-valid CI excludes zero exactly when the mSPRT rejects.
+            excludes_zero = comp.ci_low > 0 or comp.ci_high < 0
+            self.assertEqual(excludes_zero, comp.significant, treat_conv)
+
+    def test_type_one_error_controlled_under_continuous_monitoring(self):
+        rng = np.random.default_rng(0)
+        alpha, p, sims, looks, batch = 0.05, 0.05, 2000, 50, 500
+        rejected = 0
+        for _ in range(sims):
+            c = np.cumsum(rng.binomial(batch, p, size=looks))
+            t = np.cumsum(rng.binomial(batch, p, size=looks))
+            for k in range(looks):
+                n = batch * (k + 1)
+                _, _, se = two_proportion_test(int(c[k]), n, int(t[k]), n)
+                if msprt_statistic(t[k] / n - c[k] / n, se, 0.1 * p) >= 1 / alpha:
+                    rejected += 1
+                    break
+        # Peeking 50 times with a naive z-test gives roughly 25-30% false positives.
+        self.assertLess(rejected / sims, alpha + 0.01)
+
+    def test_rejects_invalid_tau(self):
+        variants = [
+            {"name": "control", "visitors": 1000, "conversions": 40, "is_control": True},
+            {"name": "v1", "visitors": 1000, "conversions": 45},
+        ]
+        with self.assertRaisesRegex(ValueError, "sequential_tau"):
+            analyze(parse_payload(self._payload(variants, sequential_tau=0)))
+
+
+class BayesianOutputTests(unittest.TestCase):
+    def test_interval_is_absolute_with_separate_relative_interval(self):
+        payload = {
+            "experiment_name": "exp",
+            "method": "bayesian",
+            "variants": [
+                {"name": "control", "visitors": 10000, "conversions": 500, "is_control": True},
+                {"name": "v1", "visitors": 10000, "conversions": 600},
+            ],
+            "samples": 20000,
+        }
+        comp = analyze(parse_payload(payload)).comparisons[0]
+        self.assertLess(comp.ci_low, comp.absolute_lift)
+        self.assertGreater(comp.ci_high, comp.absolute_lift)
+        self.assertLess(comp.relative_ci_low, comp.relative_lift)
+        self.assertGreater(comp.relative_ci_high, comp.relative_lift)
+        self.assertLess(comp.ci_high, 0.05)  # absolute scale, not relative (~20%)
+
+    def test_missing_fields_raise_value_error(self):
+        with self.assertRaisesRegex(ValueError, "variants"):
+            parse_payload({"experiment_name": "x", "method": "bayesian"})
+        with self.assertRaisesRegex(ValueError, "Invalid input"):
+            parse_payload({"method": "bayesian", "variants": [{"name": "a", "bogus": 1}]})
 
 
 if __name__ == "__main__":

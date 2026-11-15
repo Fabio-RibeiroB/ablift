@@ -4,13 +4,17 @@
 
 ## Setup
 ```bash
-uv sync --all-groups
+uv sync   # default groups include test + lint
 ```
 
 ## Commands
 ```bash
-uv run pytest          # tests (also runs on push via pre-commit)
-ablift doctor --strict # self-check
+uv run pytest             # tests (also runs on push via pre-commit)
+uv run ruff check .       # lint
+uv run ruff format --check .
+uv run ty check           # type check
+uv run ablift doctor --strict # self-check
+make demo                 # run example demo
 ```
 
 ## Rules
