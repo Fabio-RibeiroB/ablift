@@ -51,9 +51,12 @@ def _to_int(value: Any, field_name: str) -> int:
     if value is None or value == "":
         raise ValueError(f"Missing required integer field '{field_name}'.")
     try:
-        return int(float(value))
+        number = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"Column '{field_name}' must be numeric, got {value!r}.") from None
+    if not number.is_integer():
+        raise ValueError(f"Column '{field_name}' must be a whole number, got {value!r}.")
+    return int(number)
 
 
 def _to_float_or_none(value: Any, field_name: str = "value") -> float | None:
@@ -418,7 +421,7 @@ def build_duration_request_from_rows(rows: list[dict[str, Any]]) -> dict[str, An
         if kind is str:
             out[key] = str(value).strip().lower()
         elif kind is int:
-            out[key] = int(float(value))
+            out[key] = _to_int(value, key)
         else:
             out[key] = float(value)
     return out

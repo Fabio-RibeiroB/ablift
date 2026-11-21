@@ -155,6 +155,20 @@ class CodexReviewFindings(unittest.TestCase):
         }
         self.assertEqual(analyze(parse_payload(payload)).comparisons[0].metric, "arpu")
 
+    def test_fractional_counts_are_rejected_not_truncated(self):
+        from ablift.connectors import build_duration_request_from_rows
+
+        with self.assertRaisesRegex(ValueError, "n_variants.*whole number"):
+            build_duration_request_from_rows(
+                [{"baseline_rate": "0.04", "relative_mde": "0.05", "n_variants": "2.5"}]
+            )
+        req = build_duration_request_from_rows([{"daily_traffic": "50000.0", "max_days": 30}])
+        self.assertEqual((req["daily_traffic"], req["max_days"]), (50000, 30))
+        with self.assertRaisesRegex(ValueError, "visitors.*whole number"):
+            build_payload_from_rows(
+                rows(["name", "visitors", "orders"], ["A", "1000.5", "40"], ["B", "1000", "45"])
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
