@@ -262,7 +262,7 @@ Sequential ARPU example (re-run it on cumulative data whenever new data arrives)
 | `name, visitors, conversions, revenue_sum, revenue_sum_squares [, is_control]` | `arpu` by default; `--primary-metric conversion_rate` uses the conversions column |
 
 Notes:
-- `is_control` is an optional boolean column anywhere after column 3 (values like `true`/`false`, `yes`/`no`, `1`/`0`, with at least one of each). Without it, the first row is the control.
+- `is_control` is an optional boolean column anywhere after column 3. If its header contains "control", values may be `true`/`false`, `yes`/`no` or `1`/`0`. Under any other header it must use words (`true`/`false`, `yes`/`no`), with at least one of each, because a numeric 0/1 column could be a real metric. Without it, the first row is the control.
 - A single revenue column without sum of squares is rejected with a clear error, because variance cannot be estimated. Add `revenue_sum_squares`, or provide row-level data.
 - Any other number of metric columns is an error.
 

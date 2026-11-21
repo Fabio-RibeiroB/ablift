@@ -95,12 +95,29 @@ def _is_binary_col(values: list[Any]) -> bool:
     return True
 
 
+_BOOL_WORDS = {"true", "false", "yes", "no", "y", "n"}
+
+
+def _is_boolean_word_col(values: list[Any]) -> bool:
+    """True if every non-empty value is a bool or a boolean word (not a number)."""
+    seen = False
+    for v in values:
+        if v is None or v == "":
+            continue
+        if isinstance(v, bool) or str(v).strip().lower() in _BOOL_WORDS:
+            seen = True
+            continue
+        return False
+    return seen
+
+
 def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | None:
     """Return the name of a boolean-valued column beyond the first skip_cols positional columns.
 
-    A boolean-valued column whose header mentions "control" is always the control column (so
-    a column of all-false values is reported as "no control" instead of being read as a
-    metric). Otherwise a boolean column must contain at least one true and one false value.
+    A boolean-valued column (true/false, yes/no or 1/0) whose header mentions "control" is
+    always the control column, so an all-false column is reported as "no control" instead of
+    being read as a metric. Without that header hint, the column must hold boolean words
+    (true/false, yes/no, y/n) with at least one true and one false value.
     Columns are searched from the right so that numeric metric columns are not mistaken for it.
     """
     if not rows:
@@ -112,7 +129,9 @@ def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | No
             return col
     for col in candidates:
         values = [row.get(col) for row in rows]
-        if not _is_binary_col(values):
+        # Without a header hint, only boolean words count: numeric 0/1 is too easily a real
+        # metric (e.g. a tiny revenue_sum_squares) to be silently reinterpreted.
+        if not _is_boolean_word_col(values):
             continue
         has_true = any(_to_bool(v) for v in values)
         has_false = any(not _to_bool(v) for v in values if v not in (None, ""))

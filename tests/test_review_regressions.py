@@ -49,6 +49,28 @@ class ControlColumnHeaderHint(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Exactly one variant"):
             analyze(parse_payload(payload))
 
+    def test_binary_revenue_sum_squares_is_not_mistaken_for_control(self):
+        # Codex review: a 0/1 revenue_sum_squares column must stay a metric.
+        table = rows(
+            ["name", "visitors", "orders", "rev", "rev_sq"],
+            ["A", "1000", "1", "0", "0"],
+            ["B", "1000", "1", "1", "1"],
+        )
+        payload = build_payload_from_rows(table)
+        roles = payload["input_interpretation"]["column_roles"]
+        self.assertEqual(roles.get("revenue_sum_squares"), "rev_sq")
+        self.assertNotIn("is_control", roles)
+        self.assertTrue(payload["variants"][0]["is_control"])
+
+    def test_unnamed_word_control_column_still_detected(self):
+        table = rows(
+            ["name", "visitors", "orders", "flag"],
+            ["A", "1000", "40", "no"],
+            ["B", "1000", "45", "yes"],
+        )
+        payload = build_payload_from_rows(table)
+        self.assertTrue(payload["variants"][1]["is_control"])
+
 
 class AdjustedSequentialPValue(unittest.TestCase):
     def test_p_value_is_bonferroni_adjusted_and_consistent_with_significance(self):
