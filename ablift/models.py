@@ -8,7 +8,7 @@ from typing import Any
 class VariantInput:
     name: str
     visitors: int
-    conversions: int
+    conversions: int = 0
     revenue_sum: float | None = None
     revenue_sum_squares: float | None = None
     is_control: bool = False
@@ -55,6 +55,7 @@ class AnalysisInput:
 class AnalysisSettings:
     primary_metric: str
     alpha: float
+    multiple_comparisons: dict[str, Any]
     sequential_tau: float | None
     samples: int
     random_seed: int
@@ -92,6 +93,8 @@ class ComparisonResult:
     expected_loss: float | None = None
     ci_low: float | None = None
     ci_high: float | None = None
+    relative_ci_low: float | None = None
+    relative_ci_high: float | None = None
 
 
 @dataclass
@@ -112,6 +115,9 @@ class SrmResult:
     reason: str
 
 
+SCHEMA_VERSION = "1"
+
+
 @dataclass
 class AnalysisResult:
     experiment_name: str
@@ -125,4 +131,4 @@ class AnalysisResult:
     recommendation: Recommendation | None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {"schema_version": SCHEMA_VERSION, **asdict(self)}

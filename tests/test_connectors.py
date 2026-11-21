@@ -83,16 +83,54 @@ class ConnectorTests(unittest.TestCase):
         self.assertTrue(variants["control"]["is_control"])
         self.assertEqual(variants["v1"]["conversions"], 45)
 
-    def test_aggregated_arpu_approximate(self):
+    def test_aggregated_revenue_without_squares_is_rejected(self):
         rows = [
             {"variant": "control", "visitors": "1000", "revenue": "5000.50"},
             {"variant": "v1", "visitors": "1000", "revenue": "5400.00"},
         ]
+        with self.assertRaisesRegex(ValueError, "revenue_sum_squares"):
+            build_payload_from_rows(rows)
+
+    def test_aggregated_arpu_two_metric_columns(self):
+        rows = [
+            {"v": "control", "n": "1000", "rev": "5000", "rev2": "90000"},
+            {"v": "v1", "n": "1000", "rev": "5400", "rev2": "99000"},
+        ]
         payload = build_payload_from_rows(rows)
         self.assertEqual(payload["primary_metric"], "arpu")
-        self.assertTrue(payload["input_interpretation"]["arpu_approximate"])
+        self.assertEqual(payload["variants"][1]["revenue_sum_squares"], 99000)
+        roles = payload["input_interpretation"]["column_roles"]
+        self.assertEqual(roles["revenue_sum"], "rev")
+
+    def test_aggregated_arpu_with_conversions_and_control(self):
+        rows = [
+            {"v": "a", "n": "1000", "orders": "50", "rev": "5000", "rev2": "90000", "ctl": "no"},
+            {"v": "b", "n": "1000", "orders": "55", "rev": "5400", "rev2": "99000", "ctl": "yes"},
+        ]
+        payload = build_payload_from_rows(rows)
+        self.assertEqual(payload["primary_metric"], "arpu")
         variants = {v["name"]: v for v in payload["variants"]}
-        self.assertAlmostEqual(variants["control"]["revenue_sum"], 5000.50)
+        self.assertTrue(variants["b"]["is_control"])
+        self.assertEqual(variants["a"]["conversions"], 50)
+
+        override = build_payload_from_rows(rows, defaults={"primary_metric": "conversion_rate"})
+        self.assertEqual(override["primary_metric"], "conversion_rate")
+
+    def test_aggregated_too_many_columns_is_rejected(self):
+        rows = [{"v": "a", "n": "10", "x": "1", "y": "2", "z": "3", "w": "4"}]
+        with self.assertRaisesRegex(ValueError, "Could not interpret"):
+            build_payload_from_rows(rows)
+
+    def test_row_level_arpu_runs_end_to_end(self):
+        from ablift.engine import analyze, parse_payload
+
+        rows = [{"variant": "control", "revenue": str(x)} for x in (0, 0, 10.5, 20.0)] + [
+            {"variant": "v1", "revenue": str(x)} for x in (0, 15.0, 25.0, 30.0)
+        ]
+        payload = build_payload_from_rows(rows)
+        self.assertEqual(payload["variants"][0]["conversions"], 2)
+        result = analyze(parse_payload({**payload, "samples": 2000}))
+        self.assertEqual(result.comparisons[0].metric, "arpu")
 
     def test_aggregated_control_column(self):
         rows = [
@@ -137,24 +175,24 @@ class ConnectorTests(unittest.TestCase):
     def test_build_duration_request_from_rows(self):
         rows = [
             {
-                "method": "bayesian",
+                "method": "Bayesian",
                 "baseline_rate": "0.04",
                 "relative_mde": "0.05",
                 "daily_traffic": "50000",
                 "n_variants": "3",
-                "alpha": "0.05",
-                "power": "0.8",
-                "max_looks": "10",
-                "prob_threshold": "0.95",
-                "max_expected_loss": "0.001",
-                "assurance_target": "0.8",
                 "max_days": "30",
+                "alpha": "",
             }
         ]
         req = build_duration_request_from_rows(rows)
         self.assertEqual(req["method"], "bayesian")
         self.assertEqual(req["n_variants"], 3)
         self.assertEqual(req["max_days"], 30)
+        self.assertNotIn("alpha", req)
+
+    def test_duration_request_rejects_unknown_columns(self):
+        with self.assertRaisesRegex(ValueError, "max_looks"):
+            build_duration_request_from_rows([{"baseline_rate": "0.04", "max_looks": "10"}])
 
 
 if __name__ == "__main__":

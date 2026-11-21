@@ -20,49 +20,56 @@ def _z(p: float) -> float:
     return NormalDist().inv_cdf(p)
 
 
-def frequentist_duration_conversion(
+def _effect(baseline_rate: float, relative_mde: float) -> tuple[float, float, float]:
+    if not 0 < baseline_rate < 1:
+        raise ValueError("baseline_rate must be in (0, 1).")
+    if relative_mde == 0:
+        raise ValueError("relative_mde must be non-zero.")
+    p1 = baseline_rate
+    p2 = min(max(baseline_rate * (1 + relative_mde), 1e-6), 1 - 1e-6)
+    return p1, p2, abs(p2 - p1)
+
+
+def _validate_common(daily_total_traffic: int, n_variants: int, alpha: float, power: float):
+    if daily_total_traffic <= 0:
+        raise ValueError("daily_total_traffic must be positive.")
+    if n_variants < 2:
+        raise ValueError("n_variants must be at least 2 (control plus one treatment).")
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be in (0, 1).")
+    if not 0 < power < 1:
+        raise ValueError("power must be in (0, 1).")
+
+
+def fixed_horizon_duration_conversion(
     baseline_rate: float,
     relative_mde: float,
     daily_total_traffic: int,
     n_variants: int = 2,
     alpha: float = 0.05,
     power: float = 0.8,
-    max_looks: int = 1,
 ) -> DurationPlan:
-    p1 = baseline_rate
-    p2 = baseline_rate * (1 + relative_mde)
-    p2 = min(max(p2, 1e-6), 1 - 1e-6)
+    """Classic two-sided two-proportion sample size, Bonferroni-adjusted for A/B/n.
 
-    delta = abs(p2 - p1)
-    if delta <= 0:
-        raise ValueError("relative_mde must imply non-zero effect size.")
+    Only valid if you look at the data once, at the planned end date.
+    """
+    _validate_common(daily_total_traffic, n_variants, alpha, power)
+    p1, p2, delta = _effect(baseline_rate, relative_mde)
+    alpha_adj = alpha / (n_variants - 1)
 
     p_bar = 0.5 * (p1 + p2)
-    z_alpha = _z(1 - alpha / 2)
+    z_alpha = _z(1 - alpha_adj / 2)
     z_beta = _z(power)
-
     numerator = (
         z_alpha * math.sqrt(2 * p_bar * (1 - p_bar))
         + z_beta * math.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
     ) ** 2
     n_per_variant = int(math.ceil(numerator / (delta**2)))
-
-    # Approximate inflation for group-sequential monitoring.
-    if max_looks > 1:
-        inflation = 1.0 + 0.02 * math.sqrt(max_looks)
-        n_per_variant = int(math.ceil(n_per_variant * inflation))
-    else:
-        inflation = 1.0
-
-    daily_per_variant = daily_total_traffic / max(n_variants, 1)
-    if daily_per_variant <= 0:
-        raise ValueError("daily_total_traffic and n_variants imply zero traffic per variant.")
-
-    days = n_per_variant / daily_per_variant
+    daily_per_variant = daily_total_traffic / n_variants
 
     return DurationPlan(
-        method="frequentist_sequential" if max_looks > 1 else "frequentist_fixed_horizon",
-        estimated_days=days,
+        method="fixed_horizon",
+        estimated_days=n_per_variant / daily_per_variant,
         n_per_variant=n_per_variant,
         assumptions={
             "baseline_rate": baseline_rate,
@@ -71,13 +78,93 @@ def frequentist_duration_conversion(
             "power": power,
             "daily_total_traffic": daily_total_traffic,
             "n_variants": n_variants,
-            "max_looks": max_looks,
         },
         diagnostics={
-            "p1": p1,
-            "p2": p2,
+            "p_control": p1,
+            "p_treatment": p2,
             "absolute_delta": delta,
-            "sequential_inflation": inflation,
+            "alpha_per_comparison": alpha_adj,
+        },
+    )
+
+
+def _msprt_power(n: int, p1: float, p2: float, tau: float, alpha_adj: float) -> float:
+    """Probability the mSPRT has rejected by the time each arm has ``n`` units.
+
+    Evaluated at the final sample size only, which lower-bounds the probability of having
+    crossed at any earlier look, so the resulting duration is slightly conservative.
+    """
+    v = (p1 * (1 - p1) + p2 * (1 - p2)) / n
+    t2 = tau * tau
+    # Lambda(delta_hat) >= 1/alpha  <=>  |delta_hat| >= c
+    c = math.sqrt(2 * v * (v + t2) / t2 * (math.log(1 / alpha_adj) + 0.5 * math.log((v + t2) / v)))
+    delta = p2 - p1
+    sd = math.sqrt(v)
+    nd = NormalDist()
+    return (1 - nd.cdf((c - delta) / sd)) + nd.cdf((-c - delta) / sd)
+
+
+def sequential_duration_conversion(
+    baseline_rate: float,
+    relative_mde: float,
+    daily_total_traffic: int,
+    n_variants: int = 2,
+    alpha: float = 0.05,
+    power: float = 0.8,
+    sequential_tau: float | None = None,
+) -> DurationPlan:
+    """Sample size for the mSPRT used by ``ablift analyze --method sequential``.
+
+    Finds the smallest per-variant sample size at which the always-valid test reaches the
+    requested power. You may look at the results as often as you like before then.
+    """
+    _validate_common(daily_total_traffic, n_variants, alpha, power)
+    p1, p2, delta = _effect(baseline_rate, relative_mde)
+    alpha_adj = alpha / (n_variants - 1)
+    tau = sequential_tau if sequential_tau is not None else max(abs(p1) * 0.1, 1e-6)
+    if tau <= 0:
+        raise ValueError("sequential_tau must be positive.")
+
+    lo, hi = 2, 2
+    while _msprt_power(hi, p1, p2, tau, alpha_adj) < power:
+        hi *= 2
+        if hi > 10**12:
+            raise ValueError("Effect is too small to detect with any realistic sample size.")
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _msprt_power(mid, p1, p2, tau, alpha_adj) >= power:
+            hi = mid
+        else:
+            lo = mid + 1
+    n_per_variant = lo
+
+    fixed = fixed_horizon_duration_conversion(
+        baseline_rate, relative_mde, daily_total_traffic, n_variants, alpha, power
+    )
+    daily_per_variant = daily_total_traffic / n_variants
+    return DurationPlan(
+        method="sequential",
+        estimated_days=n_per_variant / daily_per_variant,
+        n_per_variant=n_per_variant,
+        assumptions={
+            "baseline_rate": baseline_rate,
+            "relative_mde": relative_mde,
+            "alpha": alpha,
+            "power": power,
+            "daily_total_traffic": daily_total_traffic,
+            "n_variants": n_variants,
+            "sequential_tau": tau,
+        },
+        diagnostics={
+            "p_control": p1,
+            "p_treatment": p2,
+            "absolute_delta": delta,
+            "alpha_per_comparison": alpha_adj,
+            "fixed_horizon_n_per_variant": fixed.n_per_variant,
+            "sequential_inflation": n_per_variant / max(fixed.n_per_variant or 1, 1),
+            "note": (
+                "Upper bound: the test may stop earlier if the true effect is larger than the MDE."
+            ),
         },
     )
 
@@ -97,13 +184,14 @@ def bayesian_duration_conversion(
     seed: int = 7,
 ) -> DurationPlan:
     rng = np.random.default_rng(seed)
-    p_control = baseline_rate
-    p_treatment = min(max(baseline_rate * (1 + relative_mde), 1e-6), 1 - 1e-6)
+    p_control, p_treatment, _ = _effect(baseline_rate, relative_mde)
 
     if daily_total_traffic <= 0:
         raise ValueError("daily_total_traffic must be positive.")
+    if n_variants < 2:
+        raise ValueError("n_variants must be at least 2 (control plus one treatment).")
 
-    daily_per_variant = daily_total_traffic / max(n_variants, 1)
+    daily_per_variant = daily_total_traffic / n_variants
     candidates = list(range(max(step_days, 1), max_days + 1, max(step_days, 1)))
 
     selected_day = None
