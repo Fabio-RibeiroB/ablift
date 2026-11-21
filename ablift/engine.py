@@ -33,6 +33,12 @@ def _parse_payload(payload: dict) -> AnalysisInput:
     if not isinstance(payload, dict):
         raise ValueError("Input must be a JSON object.")
     variants = [VariantInput(**row) for row in payload["variants"]]
+    if (payload.get("primary_metric") or "conversion_rate") == "conversion_rate":
+        for row in payload["variants"]:
+            if isinstance(row, dict) and row.get("conversions") is None:
+                raise ValueError(
+                    f"conversion_rate requires 'conversions' for variant {row.get('name')!r}."
+                )
     guardrails = [GuardrailInput(**row) for row in payload.get("guardrails") or []]
     decision_policy_payload = payload.get("decision_policy")
     threshold_payload = payload.get("decision_thresholds")

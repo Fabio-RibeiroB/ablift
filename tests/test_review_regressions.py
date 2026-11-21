@@ -92,5 +92,69 @@ class AdjustedSequentialPValue(unittest.TestCase):
                 self.assertLessEqual(res.recommendation.decision_confidence, 1.0)
 
 
+class CodexReviewFindings(unittest.TestCase):
+    def test_decimal_binary_outcomes_count_as_successes(self):
+        table = rows(
+            ["v", "converted"],
+            ["a", "1.0"],
+            ["a", "0.0"],
+            ["a", "1.0"],
+            ["b", "1.0"],
+            ["b", "0.0"],
+        )
+        payload = build_payload_from_rows(table)
+        self.assertEqual(payload["primary_metric"], "conversion_rate")
+        variants = {v["name"]: v for v in payload["variants"]}
+        self.assertEqual(variants["a"]["conversions"], 2)
+        self.assertEqual(variants["b"]["conversions"], 1)
+
+    def test_xlsx_float_outcomes_count_as_successes(self):
+        table = [
+            {"v": "a", "y": 1.0},
+            {"v": "a", "y": 0.0},
+            {"v": "b", "y": 1.0},
+            {"v": "b", "y": 1},
+        ]
+        variants = {v["name"]: v for v in build_payload_from_rows(table)["variants"]}
+        self.assertEqual(variants["a"]["conversions"], 1)
+        self.assertEqual(variants["b"]["conversions"], 2)
+
+    def test_conversion_rate_json_requires_conversions(self):
+        payload = {
+            "experiment_name": "x",
+            "method": "bayesian",
+            "variants": [
+                {"name": "c", "visitors": 1000, "conversions": 40, "is_control": True},
+                {"name": "v1", "visitors": 1000},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "requires 'conversions'.*v1"):
+            parse_payload(payload)
+
+    def test_arpu_json_may_omit_conversions(self):
+        payload = {
+            "experiment_name": "x",
+            "method": "bayesian",
+            "primary_metric": "arpu",
+            "samples": 2000,
+            "variants": [
+                {
+                    "name": "c",
+                    "visitors": 100,
+                    "revenue_sum": 500.0,
+                    "revenue_sum_squares": 9000.0,
+                    "is_control": True,
+                },
+                {
+                    "name": "v1",
+                    "visitors": 100,
+                    "revenue_sum": 550.0,
+                    "revenue_sum_squares": 9900.0,
+                },
+            ],
+        }
+        self.assertEqual(analyze(parse_payload(payload)).comparisons[0].metric, "arpu")
+
+
 if __name__ == "__main__":
     unittest.main()

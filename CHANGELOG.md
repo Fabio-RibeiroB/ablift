@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Aggregated tables with a repeated variant name were misread as row-level data; they are now rejected with a layout error.
 - A control column with no `true` values was misread as a metric column; columns whose header mentions "control" are now always treated as the control flag.
 - A numeric 0/1 metric column (e.g. a tiny `revenue_sum_squares`) could be mistaken for the control flag; numeric control flags now require a header mentioning "control".
+- Row-level outcomes written as `1.0`/`0.0` were counted as failures; numeric tokens equal to 1 now count as successes.
+- JSON conversion-rate input missing `conversions` silently defaulted to 0; it is now rejected (ARPU input may still omit it).
 - Sequential `p_value` is now Bonferroni-adjusted, so `p_value <= alpha` exactly when `significant`.
 - CSVs saved by Excel with a UTF-8 byte-order mark had a corrupted first header, and blank trailing rows in CSV/XLSX broke parsing.
 

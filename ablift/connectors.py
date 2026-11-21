@@ -71,7 +71,13 @@ def _to_bool(value: Any) -> bool:
     if value is None:
         return False
     text = str(value).strip().lower()
-    return text in {"1", "true", "yes", "y", "control"}
+    if text in {"1", "true", "yes", "y", "control"}:
+        return True
+    try:
+        # Numeric tokens such as "1.0" (common in exported CSVs) or 1.0 from XLSX.
+        return float(text) == 1.0
+    except ValueError:
+        return False
 
 
 _BOOL_STRINGS = {"0", "1", "true", "false", "yes", "no", "y", "n"}
