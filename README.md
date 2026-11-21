@@ -365,7 +365,7 @@ sequential,0.04,0.05,50000,3,0.05,0.8
 
 - **Conversion rate (Bayesian):** Beta-Binomial posterior with a `Beta(1, 1)` prior. Probability to beat control and expected loss come from posterior sampling; `ci_low`/`ci_high` are 95% credible intervals.
 - **ARPU (Bayesian):** Normal-Inverse-Gamma posterior for the mean revenue per visitor, built from `visitors`, `revenue_sum` and `revenue_sum_squares`.
-- **Sequential (mSPRT):** mixture sequential probability ratio test (Johari et al. 2017) on the difference in means, giving an e-value and an always-valid p-value `min(1, 1/e_value)`, plus an always-valid confidence interval. A comparison is significant when `e_value >= e_threshold`. The mixing parameter is `sequential_tau`.
+- **Sequential (mSPRT):** mixture sequential probability ratio test (Johari et al. 2017) on the difference in means, giving an e-value and a Bonferroni-adjusted always-valid p-value `min(1, n_comparisons/e_value)` (so `p_value <= alpha` exactly when `significant`), plus an always-valid confidence interval. A comparison is significant when `e_value >= e_threshold`. The mixing parameter is `sequential_tau`.
 - **Multiple variants:** in sequential mode alpha is Bonferroni-corrected: `alpha_per_comparison = alpha / number_of_treatments` and `e_threshold = 1 / alpha_per_comparison`. Bayesian mode applies no correction. Both are reported in `analysis_settings.multiple_comparisons`.
 - **SRM:** chi-square goodness-of-fit of the visitor counts against an equal split. Failure when `p < 0.001`.
 
@@ -399,7 +399,7 @@ Each entry in `comparisons` has:
 - `control_rate`, `treatment_rate`, `absolute_lift`, `relative_lift`
 - `ci_low`, `ci_high`: interval on the **absolute** lift scale. Bayesian: 95% credible interval. Sequential: always-valid confidence interval.
 - Bayesian only: `probability_beats_control`, `expected_loss`, `relative_ci_low`, `relative_ci_high`
-- Sequential only: `p_value` (always-valid, `min(1, 1/e_value)`), `e_value`, `e_threshold`, `significant`
+- Sequential only: `p_value` (always-valid and Bonferroni-adjusted, `min(1, n_comparisons/e_value)`; `p_value <= alpha` exactly when `significant`), `e_value`, `e_threshold`, `significant`
 
 `recommendation` contains:
 - `action` (`ship_<variant>`, `continue_collecting_data`, `do_not_ship`, `investigate_data_quality`, `stop_and_rollback`)

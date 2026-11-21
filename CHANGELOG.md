@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sequential tests declared significance on 1-2 users when an arm had 0% or 100% conversion; the standard error now uses the Agresti-Caffo adjustment, and ARPU arms with fewer than 2 users report no evidence.
 - Sequential results could emit `-Infinity` (invalid JSON) for intervals that cannot be estimated; these are now `null`.
 - SRM p-value used a Wilson-Hilferty approximation (0.95 for a perfect split); it is now the exact chi-square tail.
+- Aggregated tables with a repeated variant name were misread as row-level data; they are now rejected with a layout error.
+- A control column with no `true` values was misread as a metric column; columns whose header mentions "control" are now always treated as the control flag.
+- Sequential `p_value` is now Bonferroni-adjusted, so `p_value <= alpha` exactly when `significant`.
 - CSVs saved by Excel with a UTF-8 byte-order mark had a corrupted first header, and blank trailing rows in CSV/XLSX broke parsing.
 
 ### Changed

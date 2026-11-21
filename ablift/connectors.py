@@ -98,13 +98,19 @@ def _is_binary_col(values: list[Any]) -> bool:
 def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | None:
     """Return the name of a boolean-valued column beyond the first skip_cols positional columns.
 
-    A control column must contain explicit true/false style values with at least one of each.
+    A boolean-valued column whose header mentions "control" is always the control column (so
+    a column of all-false values is reported as "no control" instead of being read as a
+    metric). Otherwise a boolean column must contain at least one true and one false value.
     Columns are searched from the right so that numeric metric columns are not mistaken for it.
     """
     if not rows:
         return None
     all_cols = list(rows[0].keys())
-    for col in reversed(all_cols[skip_cols:]):
+    candidates = list(reversed(all_cols[skip_cols:]))
+    for col in candidates:
+        if "control" in str(col).lower() and _is_binary_col([row.get(col) for row in rows]):
+            return col
+    for col in candidates:
         values = [row.get(col) for row in rows]
         if not _is_binary_col(values):
             continue
@@ -116,12 +122,33 @@ def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | No
 
 
 def detect_input_shape(rows: list[dict[str, Any]]) -> str:
-    """Return 'row_level' if col[0] has repeated values, else 'aggregated'."""
+    """Return 'row_level' or 'aggregated' for a positional table.
+
+    Repeated variant names mean row-level data, whose layout must be
+    ``name, outcome [, is_control]``. A table with repeated names and more columns than that
+    is an aggregated table with duplicate rows, which is rejected rather than misread.
+    """
     if not rows:
         raise ValueError("Input table is empty.")
-    col0 = list(rows[0].keys())[0]
-    values = [str(row.get(col0, "")) for row in rows]
-    return "row_level" if len(set(values)) < len(values) else "aggregated"
+    cols = list(rows[0].keys())
+    names = [str(row.get(cols[0], "")).strip() for row in rows]
+    names = [n for n in names if n]
+    if not names:
+        raise ValueError("Input has no variant data: the first column (variant name) is empty.")
+    if len(set(names)) == len(names):
+        return "aggregated"
+
+    control_col = _find_control_column(rows, skip_cols=2)
+    data_cols = [c for c in cols if c != control_col]
+    if len(data_cols) <= 2:
+        return "row_level"
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    raise ValueError(
+        f"Variant name(s) {', '.join(duplicates)} appear in more than one row, but the table "
+        f"has {len(data_cols) - 1} value columns. Row-level input must be exactly: "
+        "name, outcome [, is_control]. For aggregated input, combine rows so each variant "
+        "appears once.\n" + AGGREGATED_LAYOUT_HELP
+    )
 
 
 def _build_payload_from_row_level(

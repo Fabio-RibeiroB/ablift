@@ -463,7 +463,9 @@ def _sequential_comparison(
     tau = inp.sequential_tau if inp.sequential_tau is not None else _default_tau(control_value)
     e_val = msprt_statistic(diff, se, tau)
     margin = always_valid_ci_margin(se, tau, alpha_adj)
-    p_value = min(1.0, 1.0 / e_val) if e_val > 0 else 1.0
+    # Bonferroni-adjusted always-valid p-value: p <= alpha exactly when significant.
+    n_comparisons = inp.alpha / alpha_adj
+    p_value = min(1.0, n_comparisons / e_val) if e_val > 0 else 1.0
     return ComparisonResult(
         treatment=treatment.name,
         control=control.name,
