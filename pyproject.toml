@@ -1,12 +1,14 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ablift"
-version = "0.5.0"
+version = "0.5.1"
 description = "Agent-friendly CLI for Bayesian and sequential A/B/n experiment decisions"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["ab-testing", "experimentation", "bayesian", "sequential-testing", "cli", "statistics"]
 classifiers = [
@@ -14,6 +16,7 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -44,6 +47,8 @@ lint = [
 [project.urls]
 Homepage = "https://github.com/Fabio-RibeiroB/ablift"
 Repository = "https://github.com/Fabio-RibeiroB/ablift"
+Changelog = "https://github.com/Fabio-RibeiroB/ablift/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Fabio-RibeiroB/ablift/issues"
 
 [project.scripts]
 ablift = "ablift.cli:cli"

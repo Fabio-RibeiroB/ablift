@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-22
+
+### Added
+- MIT `LICENSE` and license metadata in the package.
+- Release workflow that builds, smoke-tests and publishes to PyPI on a `v*` tag (trusted publishing).
+
+### Changed
+- Sequential `continue_collecting_data` now reports `decision_confidence = 1 - p_value` of the leading comparison, on the same scale as ship/rollback (previously the raw p-value, where lower meant stronger).
+- `duration` rejects settings the chosen method does not use (e.g. `--alpha`/`--power` with `--method bayesian`) instead of silently ignoring them. Input-file columns count too, unless `--method` overrides the file's `method`. The bundled `examples/duration_inputs.xlsx` now uses Bayesian settings.
+
+### Fixed
+- A control-flag column placed before the value columns gave a confusing numeric error, and between visitors and revenue columns was silently read as conversions. It is now rejected with a message saying the flag must be the last column.
+
 ## [0.5.0] - 2026-11-14
 
 ### Fixed
