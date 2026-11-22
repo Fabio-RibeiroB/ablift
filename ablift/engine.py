@@ -744,7 +744,9 @@ def recommend(
     return Recommendation(
         action="continue_collecting_data",
         rationale="mSPRT significance threshold not reached yet; it is safe to keep looking.",
-        decision_confidence=float(best_p),
+        # Strength of evidence for the leading comparison (1 - always-valid p-value), on the
+        # same scale as the ship/rollback confidences. It stays below 1 - alpha here.
+        decision_confidence=float(1.0 - best_p),
         next_best_action=(
             "Collect more data and re-run; the always-valid test controls the error rate "
             "no matter how often you look."

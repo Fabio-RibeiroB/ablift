@@ -21,3 +21,8 @@ make demo                 # run example demo
 - Use `uv` for all Python commands.
 - CLI uses Click; entry point is `ablift/cli.py`.
 - Read `[tool.ablift]` from `pyproject.toml` for default config.
+
+## Releasing
+1. Bump `version` in `pyproject.toml`, run `uv lock`, and move `CHANGELOG.md` entries under a new `## [X.Y.Z] - date` heading.
+2. Merge to `main`, then push a matching tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. `.github/workflows/release.yml` checks the tag matches the version, tests, builds, smoke-tests the wheel, publishes to PyPI (trusted publishing, environment `pypi`) and creates the GitHub release from the changelog section.

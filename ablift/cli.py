@@ -317,6 +317,9 @@ Examples:
 """
 
 
+_BAYESIAN_ONLY = ("prob_threshold", "max_expected_loss", "assurance_target", "max_days")
+
+
 @cli.command(epilog=DURATION_EPILOG)
 @click.option(
     "--method",
@@ -419,8 +422,11 @@ def duration(
         "max_days": 60,
     }
     try:
+        file_keys: set[str] = set()
         if input_path:
-            req.update(build_duration_request_from_rows(read_table(input_path, sheet=sheet)))
+            file_req = build_duration_request_from_rows(read_table(input_path, sheet=sheet))
+            file_keys = set(file_req)
+            req.update(file_req)
         req.update({k: v for k, v in flags.items() if v is not None})
 
         missing = [
@@ -430,6 +436,21 @@ def duration(
         ]
         if missing:
             raise click.UsageError(f"Missing required assumptions: {', '.join(missing)}.")
+
+        # Reject settings the chosen planner would silently ignore.
+        explicit = {k for k, v in flags.items() if v is not None} | file_keys
+        not_applicable = {
+            "bayesian": ("alpha", "power", "sequential_tau"),
+            "fixed": ("sequential_tau", *_BAYESIAN_ONLY),
+            "sequential": _BAYESIAN_ONLY,
+        }.get(req["method"], ())
+        ignored = [f"--{k.replace('_', '-')}" for k in not_applicable if k in explicit]
+        if ignored:
+            raise click.UsageError(
+                f"Not used by --method {req['method']}: {', '.join(ignored)} "
+                "(set as a flag or input-file column). Remove them or choose a method that "
+                "uses them."
+            )
 
         common = {
             "baseline_rate": req["baseline_rate"],

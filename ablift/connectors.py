@@ -149,6 +149,23 @@ def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | No
     return None
 
 
+def _reject_misplaced_control_column(rows: list[dict[str, Any]], value_positions: int) -> None:
+    """Raise if a control flag column sits where a value column is expected.
+
+    Inputs are read by position, so ``name, is_control, visitors, conversions`` would read
+    the flag as visitor counts. Catch the header-hinted case and say where the column goes.
+    """
+    cols = list(rows[0].keys())
+    for col in cols[1 : 1 + value_positions]:
+        if "control" in str(col).lower() and _is_binary_col([row.get(col) for row in rows]):
+            raise ValueError(
+                f"Column '{col}' looks like the control flag, but columns are read by position "
+                "and the control flag must be the last column. Move it to the end, e.g. "
+                "name, visitors, conversions, is_control (aggregated) or "
+                "name, outcome, is_control (row-level).\n" + AGGREGATED_LAYOUT_HELP
+            )
+
+
 def detect_input_shape(rows: list[dict[str, Any]]) -> str:
     """Return 'row_level' or 'aggregated' for a positional table.
 
@@ -163,6 +180,7 @@ def detect_input_shape(rows: list[dict[str, Any]]) -> str:
     names = [n for n in names if n]
     if not names:
         raise ValueError("Input has no variant data: the first column (variant name) is empty.")
+    _reject_misplaced_control_column(rows, value_positions=1)
     if len(set(names)) == len(names):
         return "aggregated"
 
@@ -262,6 +280,7 @@ def _build_payload_from_aggregated(
             "Aggregated input requires at least 3 columns: variant name, visitors, metric.\n"
             + AGGREGATED_LAYOUT_HELP
         )
+    _reject_misplaced_control_column(rows, value_positions=2)
     variant_col = cols[0]
     visitors_col = cols[1]
     control_col = _find_control_column(rows, skip_cols=3)

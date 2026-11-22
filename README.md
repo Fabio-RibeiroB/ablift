@@ -24,10 +24,11 @@ It supports:
 ## Install
 
 ```bash
-uv tool install .
+uv tool install ablift      # or: pipx install ablift / pip install ablift
 ```
 
 This installs `ablift` as a normal CLI tool and exposes the `ablift` command on your `PATH`.
+To install from a checkout instead, run `uv tool install .` in the repo.
 
 To work from the repo during development:
 
@@ -352,6 +353,7 @@ Inputs:
 - `--baseline-rate`, `--relative-mde` and `--daily-traffic` are required, from flags or `--input`. The command never prompts; missing values are a usage error (exit code 2).
 - Optional: `--method`, `--n-variants` (default 2, including control), `--alpha` (0.05), `--power` (0.8), `--sequential-tau`, `--prob-threshold`, `--max-expected-loss`, `--assurance-target`, `--max-days`, `--output`.
 - `--input` takes a CSV/XLSX whose first row has **named** columns: `method`, `baseline_rate`, `relative_mde`, `daily_traffic`, `n_variants`, `alpha`, `power`, `sequential_tau`, `prob_threshold`, `max_expected_loss`, `assurance_target`, `max_days`. Unknown columns are an error. CLI flags override file values.
+- Settings the chosen method does not use are a usage error rather than being silently ignored: `--alpha`, `--power` and `--sequential-tau` do not apply to `bayesian`; `--prob-threshold`, `--max-expected-loss`, `--assurance-target` and `--max-days` apply only to `bayesian`; `--sequential-tau` applies only to `sequential`.
 - Duration planning is conversion-rate only.
 
 Example `--input` file:
@@ -411,7 +413,7 @@ Each entry in `comparisons` has:
 How the sequential recommendation is chosen:
 - `ship_<variant>`: the best significantly positive variant, even if others are not significant. `decision_confidence = 1 - p_value` of the winner. If another variant is significantly worse, `other_variant_significantly_worse` is added to `risk_flags`.
 - `stop_and_rollback`: only if every treatment is significantly worse. `decision_confidence = 1 - p_value` of the losers (the largest of them).
-- `continue_collecting_data`: otherwise. `decision_confidence` is the smallest p-value, so lower means closer to significance. `some_variants_significantly_worse` is added if at least one variant is significantly worse.
+- `continue_collecting_data`: otherwise. `decision_confidence = 1 - p_value` of the leading comparison (the smallest adjusted p-value), so higher means closer to significance; it stays below `1 - alpha` until a decision is reached. `some_variants_significantly_worse` is added if at least one variant is significantly worse.
 
 Applies to both methods, checked first:
 - SRM failure gives `investigate_data_quality`, flag `srm_detected`, `decision_confidence = 1 - SRM p-value`.
@@ -426,6 +428,10 @@ If no explicit Bayesian decision policy is provided, `recommendation` is `null` 
 - mSPRT guarantees assume you re-run the analysis on cumulative data as it arrives. The tool keeps no state between looks.
 - No variance reduction (CUPED) yet.
 - Duration planning is conversion-rate only.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
 
 ## Development
 
