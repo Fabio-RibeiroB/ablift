@@ -79,6 +79,17 @@ class DurationIgnoredFlags(unittest.TestCase):
         self.assertEqual(res.exit_code, 2, res.output)
         self.assertIn("input-file column", res.output)
 
+    def test_method_flag_overriding_file_method_ignores_other_methods_columns(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            with open("a.csv", "w") as f:
+                f.write("method,baseline_rate,relative_mde,daily_traffic,alpha,power\n")
+                f.write("sequential,0.04,0.08,60000,0.05,0.8\n")
+            res = runner.invoke(
+                cli, ["duration", "--input", "a.csv", "--method", "bayesian", "--max-days", "5"]
+            )
+        self.assertEqual(res.exit_code, 0, res.output)
+
     def test_applicable_flags_still_accepted(self):
         res = self.invoke("--method", "sequential", "--alpha", "0.01", "--sequential-tau", "0.004")
         self.assertEqual(res.exit_code, 0, res.output)
@@ -115,6 +126,28 @@ class MisplacedControlColumn(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "must be the last column"):
             detect_input_shape(table)
+
+    def test_metric_columns_named_control_with_binary_values_are_metrics(self):
+        aggregated = [
+            rows(["name", "visitors", "control_conversions"], ["A", "2", "1"], ["B", "2", "0"]),
+            rows(["name", "control_visitors", "conversions"], ["A", "1", "1"], ["B", "1", "0"]),
+        ]
+        for table in aggregated:
+            self.assertEqual(len(build_payload_from_rows(table)["variants"]), 2)
+        row_level = rows(
+            ["name", "control_converted"], ["A", "1"], ["A", "0"], ["B", "1"], ["B", "1"]
+        )
+        self.assertEqual(detect_input_shape(row_level), "row_level")
+
+    def test_flag_like_header_variants_are_rejected(self):
+        for header in ("control", "Is_Control", "control_group", "is-control"):
+            table = rows(
+                ["name", header, "visitors", "conversions"],
+                ["A", "1", "1000", "100"],
+                ["B", "0", "1000", "120"],
+            )
+            with self.assertRaisesRegex(ValueError, "must be the last column", msg=header):
+                build_payload_from_rows(table)
 
     def test_control_header_with_non_binary_values_is_a_metric(self):
         # "control" in a header alone is not enough; values must be binary.

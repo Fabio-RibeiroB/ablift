@@ -425,7 +425,10 @@ def duration(
         file_keys: set[str] = set()
         if input_path:
             file_req = build_duration_request_from_rows(read_table(input_path, sheet=sheet))
-            file_keys = set(file_req)
+            # When --method overrides the file's method, the file's other settings were written
+            # for a different planner, so they are not counted as explicitly requested.
+            overridden = method is not None and file_req.get("method", method) != method
+            file_keys = set() if overridden else set(file_req)
             req.update(file_req)
         req.update({k: v for k, v in flags.items() if v is not None})
 

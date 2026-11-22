@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +150,9 @@ def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | No
     return None
 
 
+_CONTROL_FLAG_HEADER = re.compile(r"^(is[ _-]?)?control([ _-]?(group|flag|arm|variant))?$", re.I)
+
+
 def _reject_misplaced_control_column(rows: list[dict[str, Any]], value_positions: int) -> None:
     """Raise if a control flag column sits where a value column is expected.
 
@@ -157,7 +161,11 @@ def _reject_misplaced_control_column(rows: list[dict[str, Any]], value_positions
     """
     cols = list(rows[0].keys())
     for col in cols[1 : 1 + value_positions]:
-        if "control" in str(col).lower() and _is_binary_col([row.get(col) for row in rows]):
+        # Only flag-like headers (is_control, control, control_group, ...): a metric such as
+        # control_conversions may legitimately hold 0/1 values.
+        if _CONTROL_FLAG_HEADER.match(str(col).strip()) and _is_binary_col(
+            [row.get(col) for row in rows]
+        ):
             raise ValueError(
                 f"Column '{col}' looks like the control flag, but columns are read by position "
                 "and the control flag must be the last column. Move it to the end, e.g. "
