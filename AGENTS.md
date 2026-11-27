@@ -20,6 +20,7 @@ make docs                 # re-render docs/demo.svg from real CLI output
 
 ## Rules
 - Use `uv` for all Python commands.
+- All code must pass `make lint` (ruff check, ruff format, ty) and `make test` before it is committed. The git hooks enforce this (`uv run pre-commit install --hook-type pre-commit --hook-type pre-push`, which also covers worktrees), CI checks every PR, and `main` only accepts PRs whose checks pass. Never skip hooks with `--no-verify`.
 - CLI uses Click; entry point is `ablift/cli.py`.
 - Read `[tool.ablift]` from `pyproject.toml` for default config.
 

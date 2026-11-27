@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ablift"
 version = "0.5.0a1"
-description = "Agent-friendly CLI for Bayesian and sequential A/B/n experiment decisions"
+description = "Agent-friendly CLI that turns A/B/n test data into ship / don't-ship decisions: Bayesian, sequential (mSPRT) and fixed-horizon, with power analysis and CUPED"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -48,6 +48,7 @@ lint = [
 [project.urls]
 Homepage = "https://github.com/Fabio-RibeiroB/ablift"
 Repository = "https://github.com/Fabio-RibeiroB/ablift"
+Documentation = "https://github.com/Fabio-RibeiroB/ablift/tree/main/docs"
 Changelog = "https://github.com/Fabio-RibeiroB/ablift/blob/main/CHANGELOG.md"
 Issues = "https://github.com/Fabio-RibeiroB/ablift/issues"
 

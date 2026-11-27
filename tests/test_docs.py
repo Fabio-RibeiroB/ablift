@@ -135,11 +135,34 @@ def _slug(heading: str) -> str:
     return slug.replace(" ", "-")
 
 
+REPO_URL = re.compile(
+    r"https://(?:github\.com/Fabio-RibeiroB/ablift/blob/main|"
+    r"raw\.githubusercontent\.com/Fabio-RibeiroB/ablift/main)/"
+)
+
+
+def test_readme_links_work_on_pypi() -> None:
+    """PyPI shows README.md alone, so its links and images must be absolute URLs."""
+    relative = [
+        t
+        for t in re.findall(r"\]\(([^)\s]+)\)", README.read_text(encoding="utf-8"))
+        if not re.match(r"https?://|mailto:|#", t)
+    ]
+    assert not relative, (
+        "README.md has relative links that break on PyPI; use "
+        "https://github.com/Fabio-RibeiroB/ablift/blob/main/<path> (or raw.githubusercontent "
+        f"for images): {relative}"
+    )
+
+
 def test_links_and_anchors_resolve() -> None:
     broken = []
     for path in DOC_FILES:
         for target in re.findall(r"\]\(([^)\s]+)\)", path.read_text(encoding="utf-8")):
-            if re.match(r"https?://|mailto:", target):
+            local = REPO_URL.match(target)
+            if local:  # links to this repo's main branch must point at real files
+                target = str((ROOT / target[local.end() :]).relative_to(path.parent, walk_up=True))
+            elif re.match(r"https?://|mailto:", target):
                 continue
             file_part, _, anchor = target.partition("#")
             dest = (path.parent / file_part).resolve() if file_part else path
