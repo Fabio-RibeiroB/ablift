@@ -356,6 +356,232 @@ class BayesianOutputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid input"):
             parse_payload({"method": "bayesian", "variants": [{"name": "a", "bogus": 1}]})
 
+    def test_two_variant_probability_best_matches_pairwise_for_cr_and_arpu(self):
+        cr_payload = {
+            "experiment_name": "two_arm_cr",
+            "method": "bayesian",
+            "primary_metric": "conversion_rate",
+            "variants": [
+                {"name": "v1", "visitors": 10000, "conversions": 560, "is_control": False},
+                {"name": "control", "visitors": 10000, "conversions": 500, "is_control": True},
+            ],
+            "samples": 20000,
+            "random_seed": 13,
+        }
+        arpu_payload = {
+            "experiment_name": "two_arm_arpu",
+            "method": "bayesian",
+            "primary_metric": "arpu",
+            "variants": [
+                {
+                    "name": "control",
+                    "visitors": 5000,
+                    "conversions": 300,
+                    "revenue_sum": 10000.0,
+                    "revenue_sum_squares": 60000.0,
+                    "is_control": True,
+                },
+                {
+                    "name": "v1",
+                    "visitors": 5000,
+                    "conversions": 320,
+                    "revenue_sum": 11200.0,
+                    "revenue_sum_squares": 73000.0,
+                    "is_control": False,
+                },
+            ],
+            "samples": 20000,
+            "random_seed": 13,
+        }
+
+        for payload in (cr_payload, arpu_payload):
+            with self.subTest(metric=payload["primary_metric"]):
+                result = analyze(parse_payload(payload))
+                comp = result.comparisons[0]
+                self.assertIsNotNone(result.bayesian_arms)
+                assert result.bayesian_arms is not None
+                self.assertEqual(
+                    [arm.variant for arm in result.bayesian_arms],
+                    [v["name"] for v in payload["variants"]],
+                )
+                self.assertAlmostEqual(
+                    sum(arm.probability_best for arm in result.bayesian_arms), 1.0, places=12
+                )
+                self.assertAlmostEqual(
+                    comp.probability_best, comp.probability_beats_control, places=12
+                )
+                self.assertAlmostEqual(comp.multi_arm_expected_loss, comp.expected_loss, places=12)
+
+    def test_multi_arm_joint_invariants_for_cr_and_arpu(self):
+        cr_payload = {
+            "experiment_name": "multi_cr",
+            "method": "bayesian",
+            "primary_metric": "conversion_rate",
+            "variants": [
+                {"name": "control", "visitors": 15000, "conversions": 750, "is_control": True},
+                {"name": "v1", "visitors": 15000, "conversions": 810},
+                {"name": "v2", "visitors": 15000, "conversions": 830},
+            ],
+            "samples": 25000,
+            "random_seed": 21,
+        }
+        arpu_payload = {
+            "experiment_name": "multi_arpu",
+            "method": "bayesian",
+            "primary_metric": "arpu",
+            "variants": [
+                {
+                    "name": "control",
+                    "visitors": 4000,
+                    "conversions": 200,
+                    "revenue_sum": 8000.0,
+                    "revenue_sum_squares": 50000.0,
+                    "is_control": True,
+                },
+                {
+                    "name": "v1",
+                    "visitors": 4000,
+                    "conversions": 220,
+                    "revenue_sum": 8800.0,
+                    "revenue_sum_squares": 58000.0,
+                },
+                {
+                    "name": "v2",
+                    "visitors": 4000,
+                    "conversions": 230,
+                    "revenue_sum": 9100.0,
+                    "revenue_sum_squares": 62000.0,
+                },
+            ],
+            "samples": 25000,
+            "random_seed": 21,
+        }
+
+        for payload in (cr_payload, arpu_payload):
+            with self.subTest(metric=payload["primary_metric"]):
+                result = analyze(parse_payload(payload))
+                self.assertIsNotNone(result.bayesian_arms)
+                assert result.bayesian_arms is not None
+                self.assertEqual(len(result.bayesian_arms), 3)
+                self.assertAlmostEqual(
+                    sum(arm.probability_best for arm in result.bayesian_arms), 1.0, places=12
+                )
+                arm_map = {arm.variant: arm for arm in result.bayesian_arms}
+                self.assertTrue(arm_map["control"].is_control)
+                self.assertGreaterEqual(arm_map["control"].multi_arm_expected_loss, 0.0)
+                for comp in result.comparisons:
+                    assert comp.probability_best is not None
+                    assert comp.probability_beats_control is not None
+                    assert comp.multi_arm_expected_loss is not None
+                    assert comp.expected_loss is not None
+                    self.assertLessEqual(
+                        comp.probability_best, comp.probability_beats_control + 1e-12
+                    )
+                    self.assertGreaterEqual(
+                        comp.multi_arm_expected_loss + 1e-12, comp.expected_loss
+                    )
+                    self.assertAlmostEqual(
+                        comp.probability_best, arm_map[comp.treatment].probability_best, places=12
+                    )
+                    self.assertAlmostEqual(
+                        comp.multi_arm_expected_loss,
+                        arm_map[comp.treatment].multi_arm_expected_loss,
+                        places=12,
+                    )
+
+    def test_noisy_higher_lift_arm_does_not_mask_qualifying_winner(self):
+        payload = {
+            "experiment_name": "noisy_vs_clean",
+            "method": "bayesian",
+            "primary_metric": "conversion_rate",
+            "expected_split": [10000, 10000, 20],
+            "variants": [
+                {"name": "control", "visitors": 10000, "conversions": 500, "is_control": True},
+                {"name": "clean_winner", "visitors": 10000, "conversions": 650},
+                {"name": "noisy_high", "visitors": 20, "conversions": 2},
+            ],
+            "decision_policy": {
+                "enabled": True,
+                "bayes_prob_beats_control": 0.95,
+                "max_expected_loss": 0.001,
+            },
+            "samples": 25000,
+            "random_seed": 7,
+        }
+        result = analyze(parse_payload(payload))
+        self.assertTrue(result.srm.passed)
+        by_name = {c.treatment: c for c in result.comparisons}
+        # Confirm noisy_high really has a higher raw lift but fails Bayesian thresholds.
+        self.assertGreater(
+            by_name["noisy_high"].absolute_lift, by_name["clean_winner"].absolute_lift
+        )
+        self.assertLess(by_name["noisy_high"].probability_beats_control, 0.95)
+        self.assertIsNotNone(result.recommendation)
+        assert result.recommendation is not None
+        self.assertEqual(result.recommendation.action, "ship_clean_winner")
+        self.assertIn("P(best)=", result.recommendation.rationale)
+
+    def test_multi_arm_partial_loser_continues_collecting_data(self):
+        payload = {
+            "experiment_name": "partial_loser",
+            "method": "bayesian",
+            "variants": [
+                {"name": "control", "visitors": 10000, "conversions": 500, "is_control": True},
+                {"name": "clear_loser", "visitors": 10000, "conversions": 300},
+                {"name": "inconclusive", "visitors": 10000, "conversions": 505},
+            ],
+            "decision_policy": {
+                "enabled": True,
+                "bayes_prob_beats_control": 0.95,
+                "max_expected_loss": 0.001,
+            },
+            "samples": 20000,
+            "random_seed": 7,
+        }
+        result = analyze(parse_payload(payload))
+        self.assertIsNotNone(result.recommendation)
+        assert result.recommendation is not None
+        self.assertEqual(result.recommendation.action, "continue_collecting_data")
+
+    def test_multi_arm_all_losers_returns_do_not_ship(self):
+        payload = {
+            "experiment_name": "all_losers",
+            "method": "bayesian",
+            "variants": [
+                {"name": "control", "visitors": 10000, "conversions": 600, "is_control": True},
+                {"name": "loser_a", "visitors": 10000, "conversions": 400},
+                {"name": "loser_b", "visitors": 10000, "conversions": 350},
+            ],
+            "decision_policy": {
+                "enabled": True,
+                "bayes_prob_beats_control": 0.95,
+                "max_expected_loss": 0.001,
+            },
+            "samples": 20000,
+            "random_seed": 7,
+        }
+        result = analyze(parse_payload(payload))
+        self.assertIsNotNone(result.recommendation)
+        assert result.recommendation is not None
+        self.assertEqual(result.recommendation.action, "do_not_ship")
+        self.assertIn(
+            "Every treatment is unlikely to beat control", result.recommendation.rationale
+        )
+
+    def test_sequential_omits_bayesian_joint_fields(self):
+        payload = {
+            "experiment_name": "seq_check",
+            "method": "sequential",
+            "variants": [
+                {"name": "control", "visitors": 10000, "conversions": 500, "is_control": True},
+                {"name": "v1", "visitors": 10000, "conversions": 550},
+            ],
+        }
+        result = analyze(parse_payload(payload))
+        self.assertIsNone(result.bayesian_arms)
+        self.assertIsNone(result.comparisons[0].probability_best)
+        self.assertIsNone(result.comparisons[0].multi_arm_expected_loss)
+
 
 if __name__ == "__main__":
     unittest.main()

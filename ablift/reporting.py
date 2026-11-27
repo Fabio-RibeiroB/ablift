@@ -55,6 +55,12 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
                 f"  - Expected loss: {_fmt_float(comp.expected_loss, 6)}",
             ]
         )
+        if comp.probability_best is not None:
+            lines.append(f"  - P(best overall): {_fmt_float(comp.probability_best, 4)}")
+        if comp.multi_arm_expected_loss is not None:
+            lines.append(
+                f"  - Multi-arm expected loss: {_fmt_float(comp.multi_arm_expected_loss, 6)}"
+            )
     else:
         lines.extend(
             [
@@ -156,6 +162,16 @@ def build_markdown_report(result: AnalysisResult) -> str:
 
     for comp in result.comparisons:
         lines.extend(_comparison_lines(comp, result.method))
+
+    if result.method == "bayesian" and result.bayesian_arms:
+        lines.extend(["", "## Joint Posterior Summary"])
+        for arm in result.bayesian_arms:
+            role = "control" if arm.is_control else "treatment"
+            lines.append(
+                f"- `{arm.variant}` ({role}): "
+                f"P(best)={_fmt_float(arm.probability_best, 4)}, "
+                f"multi-arm expected loss={_fmt_float(arm.multi_arm_expected_loss, 6)}"
+            )
 
     lines.extend(["", "## Guardrails"])
     lines.extend(_guardrail_lines(result.guardrails))

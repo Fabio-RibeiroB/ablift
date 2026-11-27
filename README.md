@@ -411,10 +411,10 @@ arpu,sequential,12.5,25.0,0.05,50000,2,0.05,0.8
 
 ## Statistical methods
 
-- **Conversion rate (Bayesian):** Beta-Binomial posterior with a `Beta(1, 1)` prior. Probability to beat control and expected loss come from posterior sampling; `ci_low`/`ci_high` are 95% credible intervals.
-- **ARPU (Bayesian):** Normal-Inverse-Gamma posterior for the mean revenue per visitor, built from `visitors`, `revenue_sum` and `revenue_sum_squares`.
+- **Conversion rate (Bayesian):** Beta-Binomial posterior with a `Beta(1, 1)` prior. Pairwise (`probability_beats_control`, `expected_loss`) and joint multi-arm (`probability_best`, `multi_arm_expected_loss`) metrics come from the same joint posterior draw matrix across all arms; `ci_low`/`ci_high` are 95% credible intervals.
+- **ARPU (Bayesian):** Normal-Inverse-Gamma posterior for the mean revenue per visitor, built from `visitors`, `revenue_sum` and `revenue_sum_squares`, with the same pairwise and joint multi-arm summaries.
 - **Sequential (mSPRT):** mixture sequential probability ratio test (Johari et al. 2017) on the difference in means, giving an e-value and a Bonferroni-adjusted always-valid p-value `min(1, n_comparisons/e_value)` (so `p_value <= alpha` exactly when `significant`), plus an always-valid confidence interval. A comparison is significant when `e_value >= e_threshold`. The mixing parameter is `sequential_tau`.
-- **Multiple variants:** in sequential mode alpha is Bonferroni-corrected: `alpha_per_comparison = alpha / number_of_treatments` and `e_threshold = 1 / alpha_per_comparison`. Bayesian mode applies no correction. Both are reported in `analysis_settings.multiple_comparisons`.
+- **Multiple variants:** in sequential mode alpha is Bonferroni-corrected: `alpha_per_comparison = alpha / number_of_treatments` and `e_threshold = 1 / alpha_per_comparison`. Bayesian mode applies no alpha correction and reports joint multi-arm probabilities (`probability_best`, summing to `1.0` across control and all treatments) and `multi_arm_expected_loss = E[max_j(theta_j) - theta_i]`. Both are reported in `analysis_settings.multiple_comparisons`.
 - **SRM:** chi-square goodness-of-fit of the visitor counts against the configured expected traffic proportions (defaults to an equal `1/k` split; configurable via `expected_split`, per-variant `expected_share`, or `--expected-split`). Failure when `p < 0.001`.
 
 ## Agent playbook
@@ -448,8 +448,10 @@ Output JSON starts with `"schema_version": "1"` (for both `analyze` and `duratio
 Each entry in `comparisons` has:
 - `control_rate`, `treatment_rate`, `absolute_lift`, `relative_lift`
 - `ci_low`, `ci_high`: interval on the **absolute** lift scale. Bayesian: 95% credible interval. Sequential: always-valid confidence interval.
-- Bayesian only: `probability_beats_control`, `expected_loss`, `relative_ci_low`, `relative_ci_high`
+- Bayesian only: `probability_beats_control`, `expected_loss` (pairwise vs. control), `probability_best` (probability this arm is best overall across control and all treatments), `multi_arm_expected_loss` (`E[max_j(theta_j) - theta_i]`), `relative_ci_low`, `relative_ci_high`. For 2-variant tests, `probability_best == probability_beats_control` and `multi_arm_expected_loss == expected_loss`.
 - Sequential only: `p_value` (always-valid and Bonferroni-adjusted, `min(1, n_comparisons/e_value)`; `p_value <= alpha` exactly when `significant`), `e_value`, `e_threshold`, `significant`
+
+`bayesian_arms` (Bayesian mode only; `null` for other methods) is a list covering **every** arm (control and all treatments, in input order) with `variant`, `is_control`, `probability_best` (sums to `1.0` across all arms), and `multi_arm_expected_loss`.
 
 `recommendation` contains:
 - `action` (`ship_<variant>`, `continue_collecting_data`, `do_not_ship`, `investigate_data_quality`, `stop_and_rollback`)
@@ -457,6 +459,11 @@ Each entry in `comparisons` has:
 - `decision_confidence` (0 to 1)
 - `next_best_action`
 - `risk_flags`
+
+How the Bayesian recommendation is chosen (when an explicit `decision_policy` is enabled):
+- `ship_<variant>`: evaluates every treatment against `absolute_lift > 0`, `probability_beats_control >= bayes_prob_beats_control`, and `expected_loss <= max_expected_loss`; among qualifying winners, picks the Bayes-optimal arm minimizing `multi_arm_expected_loss` (tie-breaking on higher `absolute_lift`), so a noisy arm with a slightly higher point estimate cannot overshadow a qualifying winner.
+- `do_not_ship`: only if every treatment has `absolute_lift < 0` and `probability_beats_control <= 1 - bayes_prob_beats_control`.
+- `continue_collecting_data`: otherwise, with `decision_confidence` set to the leading treatment's `probability_beats_control`.
 
 How the sequential recommendation is chosen:
 - `ship_<variant>`: the best significantly positive variant, even if others are not significant. `decision_confidence = 1 - p_value` of the winner. If another variant is significantly worse, `other_variant_significantly_worse` is added to `risk_flags`.

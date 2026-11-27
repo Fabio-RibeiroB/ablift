@@ -85,6 +85,11 @@ class BayesianReportTests(unittest.TestCase):
         self.assertIn("95% credible interval (relative lift): [", self.report)
         self.assertIn("P(treatment > control):", self.report)
         self.assertIn("Expected loss:", self.report)
+        self.assertIn("P(best overall):", self.report)
+        self.assertIn("Multi-arm expected loss:", self.report)
+        self.assertIn("## Joint Posterior Summary", self.report)
+        self.assertIn("- `control` (control): P(best)=", self.report)
+        self.assertIn("- `v1` (treatment): P(best)=", self.report)
 
     def test_no_sequential_lines(self):
         for text in ("e-value", "e-threshold", "Always-valid", "mSPRT", "Alpha (family-wise)"):
@@ -125,6 +130,9 @@ class SequentialReportTests(unittest.TestCase):
             "credible interval",
             "P(treatment",
             "Expected loss",
+            "P(best overall)",
+            "Multi-arm expected loss",
+            "Joint Posterior Summary",
         ):
             self.assertNotIn(text, report)
 

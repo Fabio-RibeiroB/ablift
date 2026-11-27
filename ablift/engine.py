@@ -9,6 +9,7 @@ from .models import (
     AnalysisInput,
     AnalysisResult,
     AnalysisSettings,
+    BayesianArmSummary,
     ComparisonResult,
     DecisionPolicy,
     DecisionThresholds,
@@ -150,11 +151,9 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     guardrails_passed = all(g.passed for g in guardrail_results)
     srm_result = evaluate_srm(inp.variants, expected_split=inp.expected_split)
 
+    bayesian_arms: list[BayesianArmSummary] | None = None
     if inp.method == "bayesian":
-        if inp.primary_metric == "conversion_rate":
-            comparisons = analyze_bayesian_conversion(inp, control, treatments)
-        else:
-            comparisons = analyze_bayesian_arpu(inp, control, treatments)
+        comparisons, bayesian_arms = _analyze_bayesian_joint(inp, control, treatments)
     else:
         if inp.primary_metric == "conversion_rate":
             comparisons = analyze_sequential_conversion(inp, control, treatments)
@@ -173,6 +172,7 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
         guardrails=guardrail_results,
         srm=srm_result,
         recommendation=recommendation,
+        bayesian_arms=bayesian_arms,
     )
 
 
@@ -347,55 +347,145 @@ def evaluate_guardrails(inp: AnalysisInput) -> list[GuardrailResult]:
     return results
 
 
-def analyze_bayesian_conversion(
-    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
-) -> list[ComparisonResult]:
-    rng = np.random.default_rng(inp.random_seed)
+def _summarize_bayesian_draws(
+    *,
+    variants: list[VariantInput],
+    control: VariantInput,
+    treatments: list[VariantInput],
+    metric: str,
+    control_rate: float,
+    treatment_rates: list[float],
+    control_samples: np.ndarray,
+    treatment_samples_list: list[np.ndarray],
+) -> tuple[list[ComparisonResult], list[BayesianArmSummary]]:
+    """Compute pairwise and joint multi-arm Bayesian summaries from posterior draws.
 
-    alpha_prior = 1.0
-    beta_prior = 1.0
+    Row 0 of ``all_samples`` is ``control``; rows ``1..m`` correspond to ``treatments``.
+    """
+    all_samples = np.vstack([control_samples, *treatment_samples_list])
+    n_arms, n_samples = all_samples.shape
 
-    c_a = alpha_prior + control.conversions
-    c_b = beta_prior + (control.visitors - control.conversions)
-    control_samples = rng.beta(c_a, c_b, size=inp.samples)
+    best_indices = np.argmax(all_samples, axis=0)
+    prob_best = np.bincount(best_indices, minlength=n_arms) / float(n_samples)
+    best_vals = all_samples[best_indices, np.arange(n_samples)]
+    multi_arm_losses = np.mean(best_vals - all_samples, axis=1)
 
-    out: list[ComparisonResult] = []
-    for treatment in treatments:
-        t_a = alpha_prior + treatment.conversions
-        t_b = beta_prior + (treatment.visitors - treatment.conversions)
-        treatment_samples = rng.beta(t_a, t_b, size=inp.samples)
-
-        diff_samples = treatment_samples - control_samples
-        rel_samples = np.divide(
-            diff_samples,
-            np.clip(control_samples, 1e-12, None),
+    # Preserve input variant order in bayesian_arms while matching the joint matrix rows.
+    arm_index_by_id = {id(control): 0}
+    for idx, treatment in enumerate(treatments, start=1):
+        arm_index_by_id[id(treatment)] = idx
+    ordered_variants = (
+        variants if all(id(v) in arm_index_by_id for v in variants) else [control, *treatments]
+    )
+    bayesian_arms = [
+        BayesianArmSummary(
+            variant=v.name,
+            is_control=v.is_control,
+            probability_best=float(prob_best[arm_index_by_id[id(v)]]),
+            multi_arm_expected_loss=float(multi_arm_losses[arm_index_by_id[id(v)]]),
         )
+        for v in ordered_variants
+    ]
 
-        p_win = float(np.mean(treatment_samples > control_samples))
-        expected_loss = float(np.mean(np.maximum(control_samples - treatment_samples, 0.0)))
+    clipped_control = np.clip(control_samples, 1e-12, None)
+    denom = max(control_rate, 1e-12)
+    comparisons: list[ComparisonResult] = []
+    for idx, (treatment, t_rate, t_samples) in enumerate(
+        zip(treatments, treatment_rates, treatment_samples_list, strict=True),
+        start=1,
+    ):
+        diff_samples = t_samples - control_samples
+        rel_samples = np.divide(diff_samples, clipped_control)
 
-        control_rate = control.conversions / control.visitors
-        treatment_rate = treatment.conversions / treatment.visitors
+        p_win = float(np.mean(t_samples > control_samples))
+        expected_loss = float(np.mean(np.maximum(control_samples - t_samples, 0.0)))
+        ci_low, ci_high = np.quantile(diff_samples, [0.025, 0.975])
+        rel_ci_low, rel_ci_high = np.quantile(rel_samples, [0.025, 0.975])
 
-        out.append(
+        comparisons.append(
             ComparisonResult(
                 treatment=treatment.name,
                 control=control.name,
-                metric="conversion_rate",
+                metric=metric,
                 control_rate=control_rate,
-                treatment_rate=treatment_rate,
-                absolute_lift=treatment_rate - control_rate,
-                relative_lift=(treatment_rate - control_rate) / max(control_rate, 1e-12),
+                treatment_rate=t_rate,
+                absolute_lift=t_rate - control_rate,
+                relative_lift=(t_rate - control_rate) / denom,
                 probability_beats_control=p_win,
                 expected_loss=expected_loss,
-                ci_low=float(np.quantile(diff_samples, 0.025)),
-                ci_high=float(np.quantile(diff_samples, 0.975)),
-                relative_ci_low=float(np.quantile(rel_samples, 0.025)),
-                relative_ci_high=float(np.quantile(rel_samples, 0.975)),
+                probability_best=float(prob_best[idx]),
+                multi_arm_expected_loss=float(multi_arm_losses[idx]),
+                ci_low=float(ci_low),
+                ci_high=float(ci_high),
+                relative_ci_low=float(rel_ci_low),
+                relative_ci_high=float(rel_ci_high),
             )
         )
 
-    return out
+    return comparisons, bayesian_arms
+
+
+def _analyze_bayesian_joint(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> tuple[list[ComparisonResult], list[BayesianArmSummary]]:
+    rng = np.random.default_rng(inp.random_seed)
+
+    if inp.primary_metric == "conversion_rate":
+        alpha_prior = 1.0
+        beta_prior = 1.0
+        control_samples = rng.beta(
+            alpha_prior + control.conversions,
+            beta_prior + (control.visitors - control.conversions),
+            size=inp.samples,
+        )
+        treatment_samples_list = [
+            rng.beta(
+                alpha_prior + t.conversions,
+                beta_prior + (t.visitors - t.conversions),
+                size=inp.samples,
+            )
+            for t in treatments
+        ]
+        control_rate = control.conversions / control.visitors
+        treatment_rates = [t.conversions / t.visitors for t in treatments]
+    else:
+        control_samples = sample_mean_posterior(
+            control.visitors,
+            float(control.revenue_sum or 0.0),
+            float(control.revenue_sum_squares or 0.0),
+            inp.samples,
+            rng,
+        )
+        treatment_samples_list = [
+            sample_mean_posterior(
+                t.visitors,
+                float(t.revenue_sum or 0.0),
+                float(t.revenue_sum_squares or 0.0),
+                inp.samples,
+                rng,
+            )
+            for t in treatments
+        ]
+        control_rate = float(control.revenue_sum or 0.0) / control.visitors
+        treatment_rates = [float(t.revenue_sum or 0.0) / t.visitors for t in treatments]
+
+    return _summarize_bayesian_draws(
+        variants=inp.variants,
+        control=control,
+        treatments=treatments,
+        metric=inp.primary_metric,
+        control_rate=control_rate,
+        treatment_rates=treatment_rates,
+        control_samples=control_samples,
+        treatment_samples_list=treatment_samples_list,
+    )
+
+
+def analyze_bayesian_conversion(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> list[ComparisonResult]:
+    comparisons, _ = _analyze_bayesian_joint(inp, control, treatments)
+    return comparisons
 
 
 def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
@@ -458,57 +548,8 @@ def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
 def analyze_bayesian_arpu(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
 ) -> list[ComparisonResult]:
-    rng = np.random.default_rng(inp.random_seed)
-
-    control_samples = sample_mean_posterior(
-        control.visitors,
-        float(control.revenue_sum or 0.0),
-        float(control.revenue_sum_squares or 0.0),
-        inp.samples,
-        rng,
-    )
-
-    out: list[ComparisonResult] = []
-    for treatment in treatments:
-        treatment_samples = sample_mean_posterior(
-            treatment.visitors,
-            float(treatment.revenue_sum or 0.0),
-            float(treatment.revenue_sum_squares or 0.0),
-            inp.samples,
-            rng,
-        )
-
-        diff_samples = treatment_samples - control_samples
-        rel_samples = np.divide(
-            diff_samples,
-            np.clip(control_samples, 1e-12, None),
-        )
-
-        p_win = float(np.mean(treatment_samples > control_samples))
-        expected_loss = float(np.mean(np.maximum(control_samples - treatment_samples, 0.0)))
-
-        control_arpu = float(control.revenue_sum or 0.0) / control.visitors
-        treatment_arpu = float(treatment.revenue_sum or 0.0) / treatment.visitors
-
-        out.append(
-            ComparisonResult(
-                treatment=treatment.name,
-                control=control.name,
-                metric="arpu",
-                control_rate=control_arpu,
-                treatment_rate=treatment_arpu,
-                absolute_lift=treatment_arpu - control_arpu,
-                relative_lift=(treatment_arpu - control_arpu) / max(control_arpu, 1e-12),
-                probability_beats_control=p_win,
-                expected_loss=expected_loss,
-                ci_low=float(np.quantile(diff_samples, 0.025)),
-                ci_high=float(np.quantile(diff_samples, 0.975)),
-                relative_ci_low=float(np.quantile(rel_samples, 0.025)),
-                relative_ci_high=float(np.quantile(rel_samples, 0.975)),
-            )
-        )
-
-    return out
+    comparisons, _ = _analyze_bayesian_joint(inp, control, treatments)
+    return comparisons
 
 
 def _default_tau(baseline: float) -> float:
@@ -746,8 +787,6 @@ def recommend(
             risk_flags=risk_flags,
         )
 
-    best = max(comparisons, key=lambda x: x.absolute_lift)
-
     if inp.method == "bayesian":
         if not inp.decision_policy.enabled or inp.decision_policy.thresholds is None:
             return None
@@ -755,47 +794,90 @@ def recommend(
         prob_threshold = inp.decision_policy.thresholds.bayes_prob_beats_control
         loss_threshold = inp.decision_policy.thresholds.max_expected_loss
 
-        if (
-            best.probability_beats_control is not None
-            and best.expected_loss is not None
-            and best.absolute_lift > 0
-            and best.probability_beats_control >= prob_threshold
-            and best.expected_loss <= loss_threshold
-        ):
-            return Recommendation(
-                action=f"ship_{best.treatment}",
-                rationale=(
-                    f"{best.treatment} passes Bayesian thresholds "
-                    f"(P(win)={best.probability_beats_control:.3f}, "
-                    f"expected_loss={best.expected_loss:.6f})."
+        qualifying_winners = [
+            c
+            for c in comparisons
+            if c.probability_beats_control is not None
+            and c.expected_loss is not None
+            and c.absolute_lift > 0
+            and c.probability_beats_control >= prob_threshold
+            and c.expected_loss <= loss_threshold
+        ]
+        if qualifying_winners:
+            winner = min(
+                qualifying_winners,
+                key=lambda x: (
+                    x.multi_arm_expected_loss
+                    if x.multi_arm_expected_loss is not None
+                    else (x.expected_loss if x.expected_loss is not None else float("inf")),
+                    -x.absolute_lift,
                 ),
-                decision_confidence=float(best.probability_beats_control),
+            )
+            multi_arm_detail = (
+                f", P(best)={winner.probability_best:.3f}, "
+                f"multi_arm_expected_loss={winner.multi_arm_expected_loss:.6f}"
+                if len(comparisons) > 1
+                and winner.probability_best is not None
+                and winner.multi_arm_expected_loss is not None
+                else ""
+            )
+            return Recommendation(
+                action=f"ship_{winner.treatment}",
+                rationale=(
+                    f"{winner.treatment} passes Bayesian thresholds "
+                    f"(P(win)={winner.probability_beats_control:.3f}, "
+                    f"expected_loss={winner.expected_loss:.6f}{multi_arm_detail})."
+                ),
+                decision_confidence=float(winner.probability_beats_control or 0.0),
                 next_best_action="Roll out gradually and monitor guardrails.",
                 risk_flags=risk_flags,
             )
 
-        if (
-            best.probability_beats_control is not None
-            and best.expected_loss is not None
-            and best.absolute_lift < 0
-            and best.probability_beats_control <= (1.0 - prob_threshold)
-        ):
+        qualifying_losers = [
+            c
+            for c in comparisons
+            if c.probability_beats_control is not None
+            and c.expected_loss is not None
+            and c.absolute_lift < 0
+            and c.probability_beats_control <= (1.0 - prob_threshold)
+        ]
+        if qualifying_losers and len(qualifying_losers) == len(comparisons):
+            if len(qualifying_losers) == 1:
+                loser = qualifying_losers[0]
+                rationale = (
+                    f"{loser.treatment} is unlikely to beat control "
+                    f"(P(win)={loser.probability_beats_control:.3f}, "
+                    f"expected_loss={loser.expected_loss:.6f})."
+                )
+            else:
+                worst = min(qualifying_losers, key=lambda x: x.absolute_lift)
+                rationale = (
+                    f"Every treatment is unlikely to beat control "
+                    f"(worst: {worst.treatment}, "
+                    f"P(win)={worst.probability_beats_control:.3f}, "
+                    f"expected_loss={worst.expected_loss:.6f})."
+                )
+            max_p_win = max(c.probability_beats_control or 0.0 for c in qualifying_losers)
             return Recommendation(
                 action="do_not_ship",
-                rationale=(
-                    f"{best.treatment} is unlikely to beat control "
-                    f"(P(win)={best.probability_beats_control:.3f}, "
-                    f"expected_loss={best.expected_loss:.6f})."
-                ),
-                decision_confidence=float(1.0 - best.probability_beats_control),
+                rationale=rationale,
+                decision_confidence=float(1.0 - max_p_win),
                 next_best_action="Keep the control, or redefine the metric and test design before rerunning.",
                 risk_flags=risk_flags,
             )
 
+        leading_prob = max(
+            (
+                c.probability_beats_control
+                for c in comparisons
+                if c.probability_beats_control is not None
+            ),
+            default=0.5,
+        )
         return Recommendation(
             action="continue_collecting_data",
             rationale="Bayesian confidence or expected loss thresholds were not met.",
-            decision_confidence=float(best.probability_beats_control or 0.5),
+            decision_confidence=float(leading_prob),
             next_best_action="Collect more samples until decision thresholds are reached.",
             risk_flags=risk_flags,
         )
