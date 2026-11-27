@@ -752,6 +752,24 @@ def build_duration_input_schema() -> dict[str, Any]:
                 "default": 2,
                 "description": "Number of variants including control.",
             },
+            "expected_split": {
+                "anyOf": [
+                    {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {"type": "number", "exclusiveMinimum": 0},
+                    },
+                    {"type": "string", "minLength": 1},
+                    {"type": "null"},
+                ],
+                "default": None,
+                "description": (
+                    "Expected traffic allocation weights in variant order (control first), "
+                    "either as an array of positive numbers (e.g. [0.9, 0.1] or [90, 10]) or "
+                    "comma-separated weights (e.g. '0.9,0.1' in CSV/XLSX). Must have length "
+                    "n_variants; weights are normalized to sum to 1.0."
+                ),
+            },
             "alpha": {
                 "type": "number",
                 "exclusiveMinimum": 0,
@@ -833,8 +851,28 @@ def build_duration_output_schema() -> dict[str, Any]:
                 "type": ["integer", "null"],
                 "minimum": 1,
                 "description": (
-                    "Required sample size per variant, or null if Bayesian assurance target "
-                    "was not reached within max_days."
+                    "Required sample size for the control arm (equal to every arm under an "
+                    "equal split), or null if Bayesian assurance target was not reached "
+                    "within max_days."
+                ),
+            },
+            "n_by_variant": _nullable(
+                {
+                    "type": "array",
+                    "minItems": 2,
+                    "items": {"type": "integer", "minimum": 1},
+                    "description": (
+                        "Required sample size for each variant in variant order (control first), "
+                        "or null if Bayesian assurance target was not reached within max_days."
+                    ),
+                }
+            ),
+            "n_total": {
+                "type": ["integer", "null"],
+                "minimum": 2,
+                "description": (
+                    "Required total sample size across all variants (sum of n_by_variant), "
+                    "or null if Bayesian assurance target was not reached within max_days."
                 ),
             },
             "assumptions": {
@@ -844,6 +882,11 @@ def build_duration_output_schema() -> dict[str, Any]:
                     "relative_mde": {"type": "number"},
                     "daily_total_traffic": {"type": "integer", "minimum": 1},
                     "n_variants": {"type": "integer", "minimum": 2},
+                    "expected_split": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+                    },
                 },
                 "required": ["metric", "relative_mde", "daily_total_traffic", "n_variants"],
             },
@@ -854,6 +897,8 @@ def build_duration_output_schema() -> dict[str, Any]:
             "method",
             "estimated_days",
             "n_per_variant",
+            "n_by_variant",
+            "n_total",
             "assumptions",
             "diagnostics",
         ],
@@ -880,16 +925,40 @@ def build_power_output_schema() -> dict[str, Any]:
             "power": {"type": "number", "minimum": 0, "maximum": 1},
             "relative_mde": {"type": "number", "exclusiveMinimum": 0},
             "absolute_mde": {"type": "number", "minimum": 0},
-            "n_per_variant": {"type": "integer", "minimum": 2},
+            "n_per_variant": {
+                "type": "integer",
+                "minimum": 2,
+                "description": (
+                    "Control arm sample size (equal to every arm under an equal split)."
+                ),
+            },
+            "n_by_variant": {
+                "type": "array",
+                "minItems": 2,
+                "items": {"type": "integer", "minimum": 2},
+                "description": "Sample size for each variant in variant order (control first).",
+            },
+            "n_total": {
+                "type": "integer",
+                "minimum": 4,
+                "description": "Total sample size across all variants (sum of n_by_variant).",
+            },
             "assumptions": {
                 "type": "object",
                 "properties": {
                     "metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+                    "n_per_variant": {"type": "integer", "minimum": 2},
+                    "n_total": {"type": "integer", "minimum": 4},
                     "n_variants": {"type": "integer", "minimum": 2},
+                    "expected_split": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+                    },
                     "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
                     "alpha_per_comparison": {"type": "number"},
                 },
-                "required": ["metric", "n_per_variant", "n_variants", "alpha"],
+                "required": ["metric", "n_per_variant", "n_total", "n_variants", "alpha"],
             },
         },
         "required": [
@@ -900,6 +969,8 @@ def build_power_output_schema() -> dict[str, Any]:
             "relative_mde",
             "absolute_mde",
             "n_per_variant",
+            "n_by_variant",
+            "n_total",
             "assumptions",
         ],
         "additionalProperties": False,

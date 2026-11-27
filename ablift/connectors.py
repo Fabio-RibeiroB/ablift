@@ -792,6 +792,7 @@ _DURATION_FIELDS: dict[str, type] = {
     "relative_mde": float,
     "daily_traffic": int,
     "n_variants": int,
+    "expected_split": list,
     "alpha": float,
     "power": float,
     "sequential_tau": float,
@@ -800,6 +801,61 @@ _DURATION_FIELDS: dict[str, type] = {
     "assurance_target": float,
     "max_days": int,
 }
+
+
+def _parse_duration_expected_split(value: Any) -> list[float] | None:
+    """Parse duration input ``expected_split`` from a JSON list or CSV/XLSX string."""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        parts = [part.strip() for part in text.split(",")]
+        if any(not part for part in parts):
+            raise UsageOptionError(
+                f"Malformed expected_split {value!r}: empty entry between commas."
+            )
+        if any("=" in part for part in parts):
+            raise UsageOptionError(
+                f"Invalid expected_split {value!r}: duration expected_split takes positional "
+                "comma-separated positive weights in variant order (control first), "
+                "not name=weight pairs."
+            )
+        weights: list[float] = []
+        for part in parts:
+            try:
+                weight = float(part)
+            except ValueError:
+                raise UsageOptionError(
+                    f"Invalid weight {part!r} in expected_split: must be numeric."
+                ) from None
+            if not math.isfinite(weight) or weight <= 0:
+                raise UsageOptionError(
+                    f"Invalid weight {part!r} in expected_split: must be a finite positive number."
+                )
+            weights.append(weight)
+        return weights
+
+    if isinstance(value, list):
+        if not value:
+            raise UsageOptionError("Field 'expected_split' cannot be empty.")
+        weights = []
+        for idx, item in enumerate(value):
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                raise UsageOptionError(
+                    f"Field 'expected_split[{idx}]' must be a positive number, got {item!r}."
+                )
+            weight = float(item)
+            if not math.isfinite(weight) or weight <= 0:
+                raise UsageOptionError(
+                    f"Field 'expected_split[{idx}]' must be a finite positive number, got {item!r}."
+                )
+            weights.append(weight)
+        return weights
+
+    raise UsageOptionError(
+        "Field 'expected_split' must be a list of positive weights or comma-separated numbers "
+        f"(e.g. [0.9, 0.1] or '0.9,0.1'), got {value!r}."
+    )
 
 
 def _parse_duration_mapping(
@@ -825,7 +881,11 @@ def _parse_duration_mapping(
         value = row.get(key)
         if value is None or value == "":
             continue
-        if kind is str:
+        if kind is list:
+            parsed = _parse_duration_expected_split(value)
+            if parsed is not None:
+                out[key] = parsed
+        elif kind is str:
             if not isinstance(value, str):
                 raise ValueError(f"Field '{key}' must be a string, got {value!r}.")
             stripped = value.strip().lower()
