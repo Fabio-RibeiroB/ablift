@@ -29,6 +29,17 @@ jobs:
             exit 1
           fi
 
+      - name: Check CHANGELOG.md has a section for this version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Pre-releases may ship without their own section (github-release falls back to a stub note).
+          if [[ "$version" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
+            echo "Pre-release $version: changelog section optional."
+          elif ! grep -qF "## [${version}]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [${version}]' section. Run towncrier build before tagging." >&2
+            exit 1
+          fi
+
       - name: Test
         run: |
           uv sync --locked
