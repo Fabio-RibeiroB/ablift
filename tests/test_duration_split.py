@@ -116,7 +116,9 @@ def test_multi_arm_asymmetric_split_sizes_for_worst_arm() -> None:
         baseline_rate=0.04,
         relative_mde=0.10,
     )
-    assert achieved.power >= 0.8
+    # The closed-form plan lands on the target to ~1e-5; the exact power and
+    # statistics.NormalDist differ at that level across Python versions.
+    assert achieved.power >= 0.8 - 1e-4
 
 
 @pytest.mark.parametrize(
