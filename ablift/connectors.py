@@ -7,7 +7,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from openpyxl import load_workbook
+
+from .stats import bootstrap_mean_diff_ci, row_level_tail_diagnostics, winsorize_pooled
+
+
+class UsageOptionError(ValueError):
+    """Raised when a CLI/analysis option is incompatible with the input shape or metric."""
 
 
 def read_csv_text(text: str) -> list[dict[str, Any]]:
@@ -259,6 +266,10 @@ def detect_input_shape(rows: list[dict[str, Any]], primary_metric: str | None = 
 def _build_payload_from_ratio_row_level(
     rows: list[dict[str, Any]], defaults: dict[str, Any]
 ) -> dict[str, Any]:
+    if defaults.get("winsorize") is not None:
+        raise UsageOptionError("--winsorize is only supported for row-level ARPU data.")
+    if defaults.get("bootstrap_samples") is not None:
+        raise UsageOptionError("--bootstrap-samples is only supported for row-level ARPU data.")
     cols = list(rows[0].keys())
     if len(cols) < 3:
         raise ValueError(
@@ -368,26 +379,6 @@ def _build_payload_from_row_level(
         "conversion_rate" if is_conversion else "arpu"
     )
 
-    first_variant = next(iter(groups))
-    variants: list[dict[str, Any]] = []
-    for name, group_rows in groups.items():
-        if control_col:
-            is_ctrl = any(_to_bool(r.get(control_col)) for r in group_rows)
-        else:
-            is_ctrl = name == first_variant
-
-        variant_obj: dict[str, Any] = {"name": name, "is_control": is_ctrl}
-        if is_conversion:
-            variant_obj["visitors"] = len(group_rows)
-            variant_obj["conversions"] = sum(_to_bool(r.get(outcome_col)) for r in group_rows)
-        else:
-            values = [float(v) for r in group_rows if (v := r.get(outcome_col)) not in (None, "")]
-            variant_obj["visitors"] = len(values)
-            variant_obj["conversions"] = sum(1 for v in values if v > 0)
-            variant_obj["revenue_sum"] = sum(values)
-            variant_obj["revenue_sum_squares"] = sum(v * v for v in values)
-        variants.append(variant_obj)
-
     if primary_metric == "arpu" and is_conversion:
         raise ValueError("Row-level outcome column is binary; use primary_metric conversion_rate.")
     if primary_metric == "conversion_rate" and not is_conversion:
@@ -395,11 +386,105 @@ def _build_payload_from_row_level(
             "Row-level outcome column is continuous; conversion_rate needs 0/1 outcomes."
         )
 
+    winsorize = defaults.get("winsorize")
+    bootstrap_samples = defaults.get("bootstrap_samples")
+    if primary_metric != "arpu":
+        if winsorize is not None:
+            raise UsageOptionError("--winsorize is only supported for row-level ARPU data.")
+        if bootstrap_samples is not None:
+            raise UsageOptionError("--bootstrap-samples is only supported for row-level ARPU data.")
+
+    first_variant = next(iter(groups))
+    is_control_by_name: dict[str, bool] = {}
+    for name, group_rows in groups.items():
+        if control_col:
+            is_control_by_name[name] = any(_to_bool(r.get(control_col)) for r in group_rows)
+        else:
+            is_control_by_name[name] = name == first_variant
+
+    extra_interpretation: dict[str, Any] = {}
+    variants: list[dict[str, Any]] = []
+    if is_conversion:
+        for name, group_rows in groups.items():
+            variants.append(
+                {
+                    "name": name,
+                    "is_control": is_control_by_name[name],
+                    "visitors": len(group_rows),
+                    "conversions": sum(_to_bool(r.get(outcome_col)) for r in group_rows),
+                }
+            )
+    else:
+        raw_arrays: dict[str, np.ndarray] = {}
+        for name, group_rows in groups.items():
+            values = [
+                _to_finite_float(v, outcome_col)
+                for r in group_rows
+                if (v := r.get(outcome_col)) not in (None, "")
+            ]
+            raw_arrays[name] = np.asarray(values, dtype=float)
+
+        if winsorize is not None:
+            arrays, winsor_diag = winsorize_pooled(raw_arrays, winsorize)
+            extra_interpretation["winsorization"] = winsor_diag
+        else:
+            arrays = raw_arrays
+
+        extra_interpretation["arpu_tail_diagnostics"] = row_level_tail_diagnostics(arrays)
+
+        for name, arr in arrays.items():
+            variants.append(
+                {
+                    "name": name,
+                    "is_control": is_control_by_name[name],
+                    "visitors": int(arr.size),
+                    "conversions": int(np.sum(arr > 0.0)),
+                    "revenue_sum": float(np.sum(arr)),
+                    "revenue_sum_squares": float(np.sum(arr * arr)),
+                }
+            )
+
+        if bootstrap_samples is not None:
+            control_names = [n for n, is_c in is_control_by_name.items() if is_c]
+            treatment_names = [n for n, is_c in is_control_by_name.items() if not is_c]
+            if len(control_names) == 1 and treatment_names:
+                method = defaults.get("method") or "bayesian"
+                raw_alpha = defaults.get("alpha")
+                alpha = 0.05 if raw_alpha is None else float(raw_alpha)
+                if method in {"fixed", "sequential"}:
+                    alpha_boot = alpha / max(len(treatment_names), 1)
+                else:
+                    alpha_boot = 0.05
+                raw_seed = defaults.get("random_seed")
+                base_seed = 7 if raw_seed is None else int(raw_seed)
+                control_arr = arrays[control_names[0]]
+                boot_ci: dict[str, dict[str, Any]] = {}
+                for idx, t_name in enumerate(treatment_names):
+                    lo, hi = bootstrap_mean_diff_ci(
+                        control_arr,
+                        arrays[t_name],
+                        n_bootstrap=bootstrap_samples,
+                        alpha=alpha_boot,
+                        seed=base_seed + idx,
+                    )
+                    boot_ci[t_name] = {
+                        "ci_low": lo,
+                        "ci_high": hi,
+                        "n_bootstrap": int(bootstrap_samples),
+                        "confidence_level": float(1.0 - alpha_boot),
+                    }
+                extra_interpretation["bootstrap_ci"] = boot_ci
+
     column_roles = {"variant": variant_col, "outcome": outcome_col}
     if control_col:
         column_roles["is_control"] = control_col
     return _build_final_payload(
-        variants, primary_metric, defaults, source_type="row_level", column_roles=column_roles
+        variants,
+        primary_metric,
+        defaults,
+        source_type="row_level",
+        column_roles=column_roles,
+        extra_interpretation=extra_interpretation,
     )
 
 
@@ -417,6 +502,14 @@ def _build_payload_from_aggregated(
     rows: list[dict[str, Any]], defaults: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     defaults = defaults or {}
+    if defaults.get("winsorize") is not None:
+        raise UsageOptionError(
+            "--winsorize requires row-level ARPU data (aggregated inputs have no individual rows to cap)."
+        )
+    if defaults.get("bootstrap_samples") is not None:
+        raise UsageOptionError(
+            "--bootstrap-samples requires row-level ARPU data (aggregated inputs have no individual rows to resample)."
+        )
     cols = list(rows[0].keys())
     if len(cols) < 3:
         raise ValueError(
@@ -551,7 +644,15 @@ def _build_final_payload(
     defaults: dict[str, Any],
     source_type: str,
     column_roles: dict[str, str],
+    extra_interpretation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    interpretation: dict[str, Any] = {
+        "source_type": source_type,
+        "variant_count": len(variants),
+        "column_roles": column_roles,
+    }
+    if extra_interpretation:
+        interpretation.update(extra_interpretation)
     return {
         "experiment_name": defaults.get("experiment_name", "table_input_experiment"),
         "method": defaults.get("method", "bayesian"),
@@ -565,11 +666,7 @@ def _build_final_payload(
         "random_seed": defaults.get("random_seed", 7),
         "expected_split": defaults.get("expected_split"),
         "variants": variants,
-        "input_interpretation": {
-            "source_type": source_type,
-            "variant_count": len(variants),
-            "column_roles": column_roles,
-        },
+        "input_interpretation": interpretation,
     }
 
 

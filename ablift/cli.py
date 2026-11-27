@@ -11,6 +11,7 @@ from typing import Any
 import click
 
 from .connectors import (
+    UsageOptionError,
     build_duration_request_from_dict,
     build_duration_request_from_rows,
     build_payload_from_rows,
@@ -200,6 +201,17 @@ def _merge_json_payload(
     return payload
 
 
+def _reject_row_only_options_for_json(merged_defaults: dict[str, Any]) -> None:
+    if merged_defaults.get("winsorize") is not None:
+        raise UsageOptionError(
+            "--winsorize requires row-level ARPU CSV/XLSX input; aggregated JSON inputs have no rows to cap."
+        )
+    if merged_defaults.get("bootstrap_samples") is not None:
+        raise UsageOptionError(
+            "--bootstrap-samples requires row-level ARPU CSV/XLSX input; aggregated JSON inputs have no rows to resample."
+        )
+
+
 def _load_analysis_payload(
     *,
     input_path: str,
@@ -208,19 +220,22 @@ def _load_analysis_payload(
     defaults: dict[str, Any],
 ) -> dict[str, Any]:
     config_payload = _load_project_config()
+    merged_defaults = _deep_merge(config_payload, defaults)
     if input_path == "-":
         raw = _read_stdin()
         fmt = input_format or "json"
         if fmt == "json":
+            _reject_row_only_options_for_json(merged_defaults)
             return _merge_json_payload(json.loads(raw), config_payload, defaults)
         rows = read_csv_text(raw)
-        payload = build_payload_from_rows(rows, defaults=_deep_merge(config_payload, defaults))
+        payload = build_payload_from_rows(rows, defaults=merged_defaults)
         if payload.get("experiment_name") in {None, "", "table_input_experiment"}:
             payload["experiment_name"] = "stdin"
         return payload
 
     suffix = Path(input_path).suffix.lower()
     if input_format == "json" or (input_format is None and suffix == ".json"):
+        _reject_row_only_options_for_json(merged_defaults)
         raw = Path(input_path).read_text(encoding="utf-8-sig")
         return _merge_json_payload(json.loads(raw), config_payload, defaults)
 
@@ -231,7 +246,7 @@ def _load_analysis_payload(
     else:
         raise click.ClickException("Unsupported analysis input. Use .json, .csv, .xlsx, or .xlsm.")
 
-    payload = build_payload_from_rows(rows, defaults=_deep_merge(config_payload, defaults))
+    payload = build_payload_from_rows(rows, defaults=merged_defaults)
     if payload.get("experiment_name") in {None, "", "table_input_experiment"}:
         payload["experiment_name"] = Path(input_path).stem
     return payload
@@ -379,6 +394,7 @@ def _validate_fixed_method_flags(
     max_expected_loss: float | None,
     samples: int | None,
     random_seed: int | None,
+    bootstrap_samples: int | None = None,
 ) -> None:
     if effective_method != "fixed":
         return
@@ -395,7 +411,7 @@ def _validate_fixed_method_flags(
         bayesian_flags.append("--max-expected-loss")
     if samples is not None:
         bayesian_flags.append("--samples")
-    if random_seed is not None:
+    if random_seed is not None and bootstrap_samples is None:
         bayesian_flags.append("--random-seed")
     if bayesian_flags:
         joined = ", ".join(bayesian_flags)
@@ -445,6 +461,23 @@ def cli() -> None:
     type=click.Choice(["conversion_rate", "arpu", "ratio"]),
     default=None,
     help="Optional primary metric override (applies to JSON, CSV/XLSX, and stdin inputs).",
+)
+@click.option(
+    "--winsorize",
+    type=float,
+    default=None,
+    help=(
+        "Upper quantile cap in (0.5, 1.0) for pooled row-level ARPU winsorization (e.g. 0.99). "
+        "Rejected on aggregated or non-ARPU inputs."
+    ),
+)
+@click.option(
+    "--bootstrap-samples",
+    type=int,
+    default=None,
+    help=(
+        "Optional percentile bootstrap resample count (>= 100) for row-level ARPU CI cross-check."
+    ),
 )
 @click.option(
     "--enable-recommendation/--no-recommendation",
@@ -511,6 +544,8 @@ def analyze(
     experiment_name: str | None,
     method: str | None,
     primary_metric: str | None,
+    winsorize: float | None,
+    bootstrap_samples: int | None,
     enable_recommendation: bool | None,
     prob_threshold: float | None,
     max_expected_loss: float | None,
@@ -524,6 +559,13 @@ def analyze(
 ) -> None:
     """Analyze JSON, CSV, XLSX, or stdin experiment input."""
     _validate_sheet_option(input_path, input_format, sheet)
+
+    if winsorize is not None and (not math.isfinite(winsorize) or not (0.5 < winsorize < 1.0)):
+        raise click.UsageError(
+            "--winsorize must be a finite quantile strictly between 0.5 and 1.0 (e.g. 0.99)."
+        )
+    if bootstrap_samples is not None and bootstrap_samples < 100:
+        raise click.UsageError("--bootstrap-samples must be an integer >= 100.")
 
     decision_policy = None
     if (
@@ -548,6 +590,8 @@ def analyze(
         "experiment_name": experiment_name,
         "method": method,
         "primary_metric": primary_metric,
+        "winsorize": winsorize,
+        "bootstrap_samples": bootstrap_samples,
         "decision_policy": decision_policy,
         "alpha": alpha,
         "sequential_tau": sequential_tau,
@@ -562,6 +606,8 @@ def analyze(
             sheet=sheet,
             defaults=defaults,
         )
+    except UsageOptionError as exc:
+        raise click.UsageError(str(exc)) from exc
     except (ValueError, KeyError, json.JSONDecodeError) as exc:
         source = "stdin" if input_path == "-" else input_path
         raise click.ClickException(f"Could not read {source}: {exc}") from exc
@@ -575,6 +621,7 @@ def analyze(
         max_expected_loss=max_expected_loss,
         samples=samples,
         random_seed=random_seed,
+        bootstrap_samples=bootstrap_samples,
     )
 
     try:
