@@ -25,9 +25,8 @@ make docs                 # re-render docs/demo.svg from real CLI output
 ## Rules
 - Use `uv` for all Python commands.
 - All code must pass `make lint` (ruff check, ruff format, ty) and `make test` before it is committed. The git hooks enforce this. Git shares them across all worktrees, so install them once from the main checkout (`uv run pre-commit install --hook-type pre-commit --hook-type pre-push`), never from a worktree. CI checks every PR, and `main` only accepts PRs whose checks pass. Never skip hooks with `--no-verify`.
-- Several agents work on this repo in parallel; the machine-wide rules in `~/AGENTS.md` ("Working alongside other agents") apply. Specific to ablift:
-  - Hot files: `ablift/cli.py`, `ablift/engine.py`, `ablift/schemas.py`, `README.md`, `docs/demo.svg`, `pyproject.toml`. Keep edits to them small and rebase right before merging.
-  - A PR that changes statistical behaviour gets an independent review from a different model before merge: check against scipy, statsmodels or a closed form, and mutate the implementation to confirm the tests catch it.
+- Other agents work here in parallel. Use your own worktree and leave the main checkout clean on `main`. Run `git status` before branching and `git show --stat HEAD` before pushing: a stale index can silently revert others' work. Claim the issue with a draft PR before starting, warn other T3 threads before merging a breaking change, and merge only your own PRs.
+- Keep edits to `ablift/cli.py`, `engine.py` and `schemas.py` small and rebase right before merging. Statistics changes get an independent review from a different model against scipy, statsmodels or a closed form.
 - CLI uses Click; entry point is `ablift/cli.py`.
 - Read `[tool.ablift]` from `pyproject.toml` for default config.
 - Never edit `CHANGELOG.md` in a feature PR. Add a fragment `changes/<issue>.<type>.md` (`added`, `changed`, `fixed`, `removed`, `docs`); CI requires one when `ablift/` changes. Check locally with `make changelog-check` (also a pre-push hook). Internal-only changes: `no-changelog` PR label, or `SKIP_CHANGELOG=1` locally. See `changes/README.md`.
