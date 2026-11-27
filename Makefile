@@ -1,7 +1,10 @@
-.PHONY: demo test lint
+.PHONY: demo docs test lint
 
 demo:
 	bash scripts/run_demo.sh
+
+docs:
+	uv run python scripts/render_demo.py
 
 test:
 	uv run pytest

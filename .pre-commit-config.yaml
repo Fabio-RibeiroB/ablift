@@ -15,6 +15,12 @@ repos:
         language: system
         types_or: [python, pyi]
         pass_filenames: false
+      - id: docs-check
+        name: docs match the CLI (README, docs/, demo image)
+        entry: uv run pytest -q tests/test_docs.py
+        language: system
+        pass_filenames: false
+        files: ^(README\.md|docs/|ablift/cli\.py|ablift/reporting\.py|pyproject\.toml|scripts/render_demo\.py|examples/)
       - id: pytest
         name: pytest
         entry: uv run pytest

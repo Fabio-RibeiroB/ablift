@@ -15,12 +15,17 @@ uv run ruff format --check .
 uv run ty check           # type check
 uv run ablift doctor --strict # self-check
 make demo                 # run example demo
+make docs                 # re-render docs/demo.svg from real CLI output
 ```
 
 ## Rules
 - Use `uv` for all Python commands.
 - CLI uses Click; entry point is `ablift/cli.py`.
 - Read `[tool.ablift]` from `pyproject.toml` for default config.
+
+<important if="you change CLI commands, options, output, examples, or the package version">
+Update README.md / docs/ in the same change. `tests/test_docs.py` (also a pre-commit hook) fails on undocumented options, documented commands that no longer run, broken links, a stale install line, or a stale `docs/demo.svg` (fix with `make docs`).
+</important>
 
 ## Releasing
 1. Bump `version` in `pyproject.toml`, run `uv lock`, and move `CHANGELOG.md` entries under a new `## [X.Y.Z] - date` heading.
