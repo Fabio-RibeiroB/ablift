@@ -22,7 +22,12 @@ from .models import (
     SrmResult,
     VariantInput,
 )
-from .stats import delta_ratio_z_test, ratio_mean_and_var, validate_ratio_aggregates
+from .stats import (
+    aggregated_arpu_tail_diagnostics,
+    delta_ratio_z_test,
+    ratio_mean_and_var,
+    validate_ratio_aggregates,
+)
 
 SUPPORTED_METRICS = {"conversion_rate", "arpu", "ratio"}
 
@@ -443,10 +448,33 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
         guardrails=guardrail_results,
     )
 
+    input_interpretation = dict(inp.input_interpretation)
+    if inp.primary_metric == "arpu":
+        tail_diag = input_interpretation.get("arpu_tail_diagnostics")
+        if not isinstance(tail_diag, dict):
+            tail_diag = aggregated_arpu_tail_diagnostics(
+                [
+                    (
+                        v.name,
+                        v.visitors,
+                        float(v.revenue_sum or 0.0),
+                        float(v.revenue_sum_squares or 0.0),
+                    )
+                    for v in inp.variants
+                ]
+            )
+            input_interpretation["arpu_tail_diagnostics"] = tail_diag
+        if (
+            tail_diag.get("heavy_tailed")
+            and recommendation is not None
+            and "heavy_tailed_revenue" not in recommendation.risk_flags
+        ):
+            recommendation.risk_flags.append("heavy_tailed_revenue")
+
     return AnalysisResult(
         experiment_name=inp.experiment_name,
         method=inp.method,
-        analysis_settings=build_analysis_settings(inp),
+        analysis_settings=build_analysis_settings(inp, input_interpretation=input_interpretation),
         control_variant=control.name,
         comparisons=comparisons,
         guardrails_passed=guardrails_passed,
@@ -984,7 +1012,9 @@ def analyze_bayesian_conversion(
     return comparisons
 
 
-def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
+def build_analysis_settings(
+    inp: AnalysisInput, *, input_interpretation: dict[str, Any] | None = None
+) -> AnalysisSettings:
     if inp.method == "bayesian" and inp.primary_metric == "conversion_rate":
         priors = {
             "family": "beta_binomial",
@@ -1039,7 +1069,9 @@ def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
         random_seed=inp.random_seed,
         priors=priors,
         decision_policy=policy,
-        input_interpretation=inp.input_interpretation,
+        input_interpretation=(
+            input_interpretation if input_interpretation is not None else inp.input_interpretation
+        ),
     )
 
 

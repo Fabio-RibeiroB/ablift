@@ -208,12 +208,44 @@ def build_markdown_report(result: AnalysisResult) -> str:
         f"- SRM p-value: {_fmt_float(result.srm.p_value, 6)}",
         f"- SRM expected proportions: {', '.join(_fmt_pct(p) for p in result.srm.expected_proportions)}",
         f"- SRM reason: {result.srm.reason}",
-        "",
-        "## Variant Comparisons",
     ]
 
+    interp = settings.input_interpretation
+    winsor = interp.get("winsorization")
+    if isinstance(winsor, dict):
+        lines.append(
+            f"- Winsorization: pooled q=`{winsor.get('quantile')}`, "
+            f"cap={_fmt_float(winsor.get('cap_value'), 4)}, "
+            f"capped={winsor.get('capped_count')} ({_fmt_pct(float(winsor.get('capped_rate', 0.0)))}), "
+            f"variance reduction={_fmt_pct(float(winsor.get('variance_reduction_ratio', 0.0)))}"
+        )
+    tail_diag = interp.get("arpu_tail_diagnostics")
+    if isinstance(tail_diag, dict) and tail_diag.get("heavy_tailed"):
+        if tail_diag.get("source") == "row_level":
+            lines.append(
+                f"- ARPU tail warning (`heavy_tailed_revenue`): "
+                f"skewness={_fmt_float(tail_diag.get('max_arm_skewness'), 2)}, "
+                f"max/|mean|={_fmt_float(tail_diag.get('max_to_mean_ratio'), 2)}, "
+                f"Kohavi min n={_fmt_float(tail_diag.get('kohavi_min_n'), 0)} "
+                f"(min arm n={tail_diag.get('min_arm_n')})"
+            )
+        else:
+            lines.append(
+                f"- ARPU tail warning (`heavy_tailed_revenue`): "
+                f"max CV={_fmt_float(tail_diag.get('max_cv'), 2)} (> 3.0)"
+            )
+
+    lines.extend(["", "## Variant Comparisons"])
+
+    bootstrap_ci = interp.get("bootstrap_ci")
     for comp in result.comparisons:
         lines.extend(_comparison_lines(comp, result.method))
+        if isinstance(bootstrap_ci, dict) and isinstance(bootstrap_ci.get(comp.treatment), dict):
+            bci = bootstrap_ci[comp.treatment]
+            lines.append(
+                f"  - Bootstrap CI (absolute lift, {bci.get('n_bootstrap')} resamples): "
+                f"[{_fmt_float(bci.get('ci_low'))}, {_fmt_float(bci.get('ci_high'))}]"
+            )
 
     if result.method == "bayesian" and result.bayesian_arms:
         lines.extend(["", "## Joint Posterior Summary"])
