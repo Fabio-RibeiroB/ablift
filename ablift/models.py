@@ -82,6 +82,8 @@ class AnalysisSettings:
     priors: dict[str, Any]
     decision_policy: dict[str, Any]
     input_interpretation: dict[str, Any]
+    # Absolute path of the pyproject.toml whose [tool.ablift] was applied; set by the CLI.
+    config_source: str | None = None
 
 
 @dataclass

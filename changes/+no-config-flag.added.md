@@ -1,0 +1,1 @@
+`ablift analyze` now reports which `pyproject.toml` it took defaults from in `analysis_settings.config_source` (an absolute path, or `null` when no `[tool.ablift]` table was applied), and a new `--no-config` flag ignores that file entirely so results depend only on the input and flags.

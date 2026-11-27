@@ -144,12 +144,27 @@ def _parse_expected_split_option(raw: str) -> list[float] | dict[str, float]:
     return weights
 
 
-def _load_project_config() -> dict[str, Any]:
+def _load_project_config(use_config: bool = True) -> tuple[dict[str, Any], str | None]:
+    """Return ``[tool.ablift]`` from ``./pyproject.toml`` and the file's absolute path.
+
+    The path is ``None`` when config is disabled, the file is missing, or it has no
+    ``[tool.ablift]`` table, so callers can report exactly where settings came from.
+    """
+    if not use_config:
+        return {}, None
     pyproject_path = Path.cwd() / "pyproject.toml"
-    if not pyproject_path.exists():
-        return {}
-    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    return data.get("tool", {}).get("ablift", {})
+    if not pyproject_path.is_file():
+        return {}, None
+    try:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise click.ClickException(
+            f"Could not parse {pyproject_path}: {exc}. Fix it or pass --no-config."
+        ) from exc
+    config = data.get("tool", {}).get("ablift")
+    if not isinstance(config, dict):
+        return {}, None
+    return config, str(pyproject_path.resolve())
 
 
 def _read_stdin() -> str:
@@ -226,8 +241,8 @@ def _load_analysis_payload(
     input_format: str | None,
     sheet: str | None,
     defaults: dict[str, Any],
+    config_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    config_payload = _load_project_config()
     merged_defaults = _deep_merge(config_payload, defaults)
     if input_path == "-":
         raw = _read_stdin()
@@ -574,6 +589,15 @@ def cli() -> None:
     ),
 )
 @click.option(
+    "--no-config",
+    "no_config",
+    is_flag=True,
+    help=(
+        "Ignore [tool.ablift] in ./pyproject.toml. Without it, analysis_settings.config_source "
+        "reports the config file that was applied."
+    ),
+)
+@click.option(
     "--output",
     "output_path",
     required=False,
@@ -605,6 +629,7 @@ def analyze(
     samples: int | None,
     random_seed: int | None,
     expected_split: str | None,
+    no_config: bool,
     output_path: str | None,
     report_path: str | None,
 ) -> None:
@@ -647,12 +672,14 @@ def analyze(
         "random_seed": random_seed,
         "expected_split": parsed_expected_split,
     }
+    config_payload, config_source = _load_project_config(use_config=not no_config)
     try:
         input_payload = _load_analysis_payload(
             input_path=input_path,
             input_format=input_format,
             sheet=sheet,
             defaults=defaults,
+            config_payload=config_payload,
         )
     except UsageOptionError as exc:
         raise click.UsageError(str(exc)) from exc
@@ -674,7 +701,9 @@ def analyze(
     )
 
     try:
-        _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
+        result = run_analysis(parse_payload(input_payload))
+        result.analysis_settings.config_source = config_source
+        _emit_analysis(result, output_path, report_path)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     except MemoryError as exc:

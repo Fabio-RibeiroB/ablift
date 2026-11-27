@@ -511,6 +511,13 @@ def build_analyze_output_schema() -> dict[str, Any]:
                         "required": ["enabled", "source", "thresholds"],
                     },
                     "input_interpretation": {"type": "object"},
+                    "config_source": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Absolute path of the pyproject.toml whose [tool.ablift] table was "
+                            "applied, or null when none was found or --no-config was given."
+                        ),
+                    },
                 },
                 "required": [
                     "primary_metric",
@@ -522,6 +529,7 @@ def build_analyze_output_schema() -> dict[str, Any]:
                     "priors",
                     "decision_policy",
                     "input_interpretation",
+                    "config_source",
                 ],
                 "additionalProperties": False,
             },

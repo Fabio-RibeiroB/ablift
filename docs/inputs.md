@@ -288,7 +288,7 @@ Notes:
 
 ## Reusable project config
 
-Use `[tool.ablift]` in `pyproject.toml` (read from the current directory) when you want one decision policy and one set of inference settings reused across analyses in the project.
+Use `[tool.ablift]` in `pyproject.toml` (read from the current directory) when you want one decision policy and one set of inference settings reused across analyses in the project. Only `ablift analyze` reads it; `duration` and `power` do not.
 
 ```toml
 [tool.ablift]
@@ -308,3 +308,9 @@ Precedence is:
 - input file
 - `pyproject.toml` `[tool.ablift]`
 - built-in defaults
+
+Every `analyze` output records the file that was applied in `analysis_settings.config_source` (its absolute path, or `null` when no `[tool.ablift]` table was found). Pass `--no-config` to ignore `pyproject.toml` entirely, for example when running from a directory whose project config is not meant for this analysis:
+
+```bash
+ablift analyze --input examples/checkout_test.csv --no-config
+```
