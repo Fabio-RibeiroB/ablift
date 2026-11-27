@@ -30,3 +30,10 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+      - id: changelog-check
+        name: changelog fragment for ablift/ changes (SKIP_CHANGELOG=1 to skip)
+        entry: bash scripts/check_changelog_fragment.sh origin/main
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
