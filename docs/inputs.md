@@ -278,7 +278,7 @@ ablift example-input | ablift analyze --input -
 cat examples/conversion_multivariant.csv | ablift analyze --input - --input-format csv
 
 # Plan duration from piped JSON or CSV (auto-detected if --input-format is omitted)
-echo '{"baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
+echo '{"method": "sequential", "baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
 cat examples/duration_inputs.csv | ablift duration --input - --input-format csv
 ```
 

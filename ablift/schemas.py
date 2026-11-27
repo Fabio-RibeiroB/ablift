@@ -732,8 +732,9 @@ def build_duration_input_schema() -> dict[str, Any]:
             "method": {
                 "type": "string",
                 "enum": ["sequential", "fixed", "bayesian"],
-                "default": "sequential",
-                "description": "Duration planning method.",
+                "description": (
+                    "Duration planning method. No default: set it here or pass --method."
+                ),
             },
             "baseline_rate": {
                 "type": "number",

@@ -91,9 +91,9 @@ class DurationCliTests(unittest.TestCase):
         self.assertIn("--relative-mde", result.output)
         self.assertIn("--daily-traffic", result.output)
 
-    def test_sequential_is_default_and_longer_than_fixed(self):
+    def test_sequential_is_longer_than_fixed(self):
         args = ["--baseline-rate", "0.04", "--relative-mde", "0.05", "--daily-traffic", "50000"]
-        seq = CliRunner().invoke(cli, ["duration", *args])
+        seq = CliRunner().invoke(cli, ["duration", "--method", "sequential", *args])
         fixed = CliRunner().invoke(cli, ["duration", "--method", "fixed", *args])
         self.assertEqual(seq.exit_code, 0, seq.output)
         self.assertEqual(fixed.exit_code, 0, fixed.output)

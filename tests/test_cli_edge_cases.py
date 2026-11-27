@@ -92,7 +92,9 @@ class OutputFileTests(TmpDirCase):
 
     def test_duration_output_creates_nested_dirs(self):
         out = self.dir / "x" / "y" / "plan.json"
-        result = self.run_cli(["duration", *DURATION_ARGS, "--output", out])
+        result = self.run_cli(
+            ["duration", "--method", "sequential", *DURATION_ARGS, "--output", out]
+        )
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(result.output.strip(), "")
         self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["schema_version"], "1")
@@ -403,8 +405,9 @@ class DurationCliTests(TmpDirCase):
             self.assertIn("assumptions", data)
 
     def test_more_variants_take_longer(self):
-        two = json.loads(self.run_cli(["duration", *DURATION_ARGS]).output)
-        four = json.loads(self.run_cli(["duration", *DURATION_ARGS, "--n-variants", 4]).output)
+        seq = ["duration", "--method", "sequential", *DURATION_ARGS]
+        two = json.loads(self.run_cli(seq).output)
+        four = json.loads(self.run_cli([*seq, "--n-variants", 4]).output)
         self.assertGreater(four["estimated_days"], two["estimated_days"])
 
     def test_csv_input_with_flag_override(self):
@@ -443,7 +446,7 @@ class DurationCliTests(TmpDirCase):
         for override in cases:
             args = {"--baseline-rate": "0.04", "--relative-mde": "0.05", "--daily-traffic": "50000"}
             args.update(override)
-            argv = ["duration"]
+            argv = ["duration", "--method", "sequential"]
             for key, value in args.items():
                 argv += [key, value]
             with self.subTest(override=override):

@@ -767,16 +767,34 @@ def _parse_positional_expected_split(raw: str) -> list[float]:
     return parsed
 
 
+_METHOD_HINT = (
+    "Use 'sequential' if you'll check results as they come in, 'fixed' for a single planned look"
+)
+
+
+def _missing_method_error(
+    choices: tuple[str, ...], *, from_input: bool = False
+) -> click.UsageError:
+    """Planning commands have no default method, so a plan never silently switches framework."""
+    where = " (as a flag or a 'method' input field)" if from_input else ""
+    hint = _METHOD_HINT + (
+        ", 'bayesian' to plan a Bayesian analysis." if "bayesian" in choices else "."
+    )
+    return click.UsageError(
+        f"Missing --method{where}. Choose one of: {', '.join(repr(c) for c in choices)}. {hint}"
+    )
+
+
 DURATION_EPILOG = """\b
 Examples:
   ablift duration --method sequential --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000
   ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3
   ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --expected-split 0.9,0.1
   ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.08 --daily-traffic 60000
-  ablift duration --metric arpu --baseline-mean 12.5 --baseline-sd 25.0 --relative-mde 0.05 --daily-traffic 50000
-  ablift duration --metric arpu --baseline-mean 12.5 --baseline-cv 2.0 --relative-mde 0.05 --daily-traffic 50000
-  ablift duration --input assumptions.csv
-  echo '{"baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
+  ablift duration --method sequential --metric arpu --baseline-mean 12.5 --baseline-sd 25.0 --relative-mde 0.05 --daily-traffic 50000
+  ablift duration --method fixed --metric arpu --baseline-mean 12.5 --baseline-cv 2.0 --relative-mde 0.05 --daily-traffic 50000
+  ablift duration --input assumptions.csv   # needs a method column (or pass --method)
+  echo '{"method": "sequential", "baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
   cat assumptions.csv | ablift duration --input - --input-format csv
 """
 
@@ -799,8 +817,9 @@ _METRIC_SCOPED = (*_CONVERSION_ONLY, *_ARPU_ONLY)
     "--method",
     type=click.Choice(["sequential", "fixed", "bayesian"]),
     default=None,
-    help="Planning model. 'sequential' matches 'analyze --method sequential' (mSPRT). "
-    "[default: sequential]",
+    help="Planning model; required here or as a 'method' input field. 'sequential' "
+    "matches 'analyze --method sequential' (mSPRT), 'fixed' a single planned look, "
+    "'bayesian' 'analyze --method bayesian'.",
 )
 @click.option(
     "--baseline-rate",
@@ -943,7 +962,6 @@ def duration(
     }
     req: dict[str, Any] = {
         "metric": "conversion_rate",
-        "method": "sequential",
         "n_variants": 2,
         "alpha": 0.05,
         "power": 0.8,
@@ -990,7 +1008,7 @@ def duration(
             raise click.UsageError(
                 f"Unknown metric '{req['metric']}'. Use conversion_rate or arpu."
             )
-        if req["method"] not in {"sequential", "fixed", "bayesian"}:
+        if req.get("method") not in {None, "sequential", "fixed", "bayesian"}:
             raise click.UsageError(
                 f"Unknown method '{req['method']}'. Use sequential, fixed, or bayesian."
             )
@@ -1034,6 +1052,8 @@ def duration(
             if missing:
                 raise click.UsageError(f"Missing required assumptions: {', '.join(missing)}.")
 
+        if req.get("method") is None:
+            raise _missing_method_error(("sequential", "fixed", "bayesian"), from_input=True)
         not_applicable_method = {
             "bayesian": ("alpha", "power", "sequential_tau"),
             "fixed": ("sequential_tau", *_BAYESIAN_ONLY),
@@ -1060,7 +1080,7 @@ def duration(
                 raise click.UsageError(str(exc)) from exc
 
         if req["metric"] == "conversion_rate":
-            common = {
+            common: dict[str, Any] = {
                 "baseline_rate": req["baseline_rate"],
                 "relative_mde": req["relative_mde"],
                 "daily_total_traffic": req["daily_traffic"],
@@ -1165,10 +1185,10 @@ def doctor(strict: bool, json_output: bool) -> None:
 
 POWER_EPILOG = """\b
 Examples:
-  ablift power --baseline-rate 0.08 --n-per-variant 10000 --relative-mde 0.1
-  ablift power --baseline-rate 0.08 --n-per-variant 10000
-  ablift power --baseline-rate 0.08 --n-total 20000 --expected-split 0.9,0.1 --relative-mde 0.1
-  ablift power --metric arpu --baseline-mean 12.5 --baseline-sd 25 --n-per-variant 20000
+  ablift power --method fixed --baseline-rate 0.08 --n-per-variant 10000 --relative-mde 0.1
+  ablift power --method fixed --baseline-rate 0.08 --n-per-variant 10000
+  ablift power --method fixed --baseline-rate 0.08 --n-total 20000 --expected-split 0.9,0.1 --relative-mde 0.1
+  ablift power --method fixed --metric arpu --baseline-mean 12.5 --baseline-sd 25 --n-per-variant 20000
   ablift power --method sequential --baseline-rate 0.04 --n-per-variant 50000 --relative-mde 0.1
 """
 
@@ -1183,9 +1203,8 @@ Examples:
 @click.option(
     "--method",
     type=click.Choice(["fixed", "sequential"]),
-    default="fixed",
-    show_default=True,
-    help="'fixed' is the classic single-look test; 'sequential' matches mSPRT analysis.",
+    default=None,
+    help="Required. 'fixed' is the classic single-look test; 'sequential' matches mSPRT analysis.",
 )
 @click.option(
     "--n-per-variant",
@@ -1242,7 +1261,7 @@ Examples:
 )
 def power(
     metric: str,
-    method: str,
+    method: str | None,
     n_per_variant: int | None,
     n_total: int | None,
     expected_split: str | None,
@@ -1258,6 +1277,8 @@ def power(
     output_path: str | None,
 ) -> None:
     """Power for a given sample size, or the smallest lift it can detect."""
+    if method is None:
+        raise _missing_method_error(("sequential", "fixed"))
     if (n_per_variant is None) == (n_total is None):
         raise click.UsageError("Give exactly one of --n-per-variant or --n-total.")
     parsed_expected_split = (
