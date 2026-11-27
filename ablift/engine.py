@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from statistics import NormalDist
+from typing import Any
 
 import numpy as np
 
@@ -16,6 +17,8 @@ from .models import (
     GuardrailInput,
     GuardrailResult,
     Recommendation,
+    SecondaryMetricInput,
+    SecondaryMetricResult,
     SrmResult,
     VariantInput,
 )
@@ -30,6 +33,47 @@ def parse_payload(payload: dict) -> AnalysisInput:
         raise ValueError(f"Invalid input structure: {exc}") from exc
 
 
+def _parse_submetric_variants(
+    raw_variants: Any,
+    *,
+    metric: str | None,
+    primary_by_name: dict[str, VariantInput],
+    label: str,
+) -> list[VariantInput]:
+    if not isinstance(raw_variants, list) or not raw_variants:
+        raise ValueError(f"{label} must provide a non-empty 'variants' list.")
+
+    parsed: list[VariantInput] = []
+    for row in raw_variants:
+        if not isinstance(row, dict):
+            raise ValueError(f"{label} variants entries must be JSON objects.")
+        row_copy: dict[str, Any] = dict(row)
+        name = row_copy.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{label} variant entry requires a non-empty string 'name'.")
+        primary = primary_by_name.get(name)
+        if primary is None:
+            raise ValueError(
+                f"{label} contains unknown variant(s): {name}. "
+                f"Expected: {', '.join(primary_by_name)}."
+            )
+        if row_copy.get("visitors") is None:
+            row_copy["visitors"] = primary.visitors
+        if "is_control" not in row_copy or row_copy["is_control"] is None:
+            row_copy["is_control"] = primary.is_control
+        elif bool(row_copy["is_control"]) != primary.is_control:
+            raise ValueError(
+                f"{label} variant {name!r} has is_control={bool(row_copy['is_control'])}, "
+                f"which contradicts primary variant is_control={primary.is_control}."
+            )
+        if metric == "conversion_rate" and row_copy.get("conversions") is None:
+            raise ValueError(
+                f"{label}: conversion_rate requires 'conversions' for variant {name!r}."
+            )
+        parsed.append(VariantInput(**row_copy))
+    return parsed
+
+
 def _parse_payload(payload: dict) -> AnalysisInput:
     if not isinstance(payload, dict):
         raise ValueError("Input must be a JSON object.")
@@ -40,7 +84,55 @@ def _parse_payload(payload: dict) -> AnalysisInput:
                 raise ValueError(
                     f"conversion_rate requires 'conversions' for variant {row.get('name')!r}."
                 )
-    guardrails = [GuardrailInput(**row) for row in payload.get("guardrails") or []]
+    primary_by_name = {v.name: v for v in variants}
+
+    raw_guardrails = payload.get("guardrails")
+    if raw_guardrails is not None and not isinstance(raw_guardrails, list):
+        raise ValueError("'guardrails' must be a list.")
+
+    guardrails: list[GuardrailInput] = []
+    for row in raw_guardrails or []:
+        if not isinstance(row, dict):
+            raise ValueError("Each guardrail entry must be a JSON object.")
+        if row.get("variants") is not None:
+            row_copy = dict(row)
+            g_name = row_copy.get("name") or "<unnamed>"
+            g_metric = row_copy.get("metric")
+            row_copy["variants"] = _parse_submetric_variants(
+                row_copy["variants"],
+                metric=g_metric,
+                primary_by_name=primary_by_name,
+                label=f"Guardrail {g_name!r}",
+            )
+            guardrails.append(GuardrailInput(**row_copy))
+        else:
+            guardrails.append(GuardrailInput(**row))
+
+    raw_secondary = payload.get("secondary_metrics")
+    if raw_secondary is not None and not isinstance(raw_secondary, list):
+        raise ValueError("'secondary_metrics' must be a list.")
+
+    secondary_metrics: list[SecondaryMetricInput] = []
+    for row in raw_secondary or []:
+        if not isinstance(row, dict):
+            raise ValueError("Each secondary_metrics entry must be a JSON object.")
+        unknown_keys = sorted(set(row) - {"name", "metric", "variants"})
+        if unknown_keys:
+            raise ValueError(
+                f"Secondary metric entry has unknown field(s): {', '.join(unknown_keys)}."
+            )
+        s_name = row["name"]
+        s_metric = row["metric"]
+        s_variants = _parse_submetric_variants(
+            row["variants"],
+            metric=s_metric,
+            primary_by_name=primary_by_name,
+            label=f"Secondary metric {s_name!r}",
+        )
+        secondary_metrics.append(
+            SecondaryMetricInput(name=s_name, metric=s_metric, variants=s_variants)
+        )
+
     decision_policy_payload = payload.get("decision_policy")
     threshold_payload = payload.get("decision_thresholds")
     method = payload.get("method") or "bayesian"
@@ -80,12 +172,132 @@ def _parse_payload(payload: dict) -> AnalysisInput:
         alpha=payload.get("alpha", 0.05),
         sequential_tau=payload.get("sequential_tau"),
         guardrails=guardrails,
+        secondary_metrics=secondary_metrics,
         decision_policy=decision_policy,
         random_seed=payload.get("random_seed", 7),
         samples=payload.get("samples", 50000),
         input_interpretation=payload.get("input_interpretation", {}),
         expected_split=payload.get("expected_split"),
     )
+
+
+def _validate_variant_metrics(variants: list[VariantInput], metric: str, label: str) -> None:
+    if metric not in {"conversion_rate", "arpu"}:
+        raise ValueError(f"{label} metric must be 'conversion_rate' or 'arpu', got {metric!r}.")
+    for variant in variants:
+        if isinstance(variant.visitors, bool) or variant.visitors <= 0:
+            raise ValueError(f"{label}: visitors must be positive for {variant.name}.")
+        if metric == "conversion_rate":
+            if isinstance(variant.conversions, bool) or variant.conversions < 0:
+                raise ValueError(f"{label}: conversions must be non-negative for {variant.name}.")
+            if variant.conversions > variant.visitors:
+                raise ValueError(
+                    f"{label}: conversions cannot exceed visitors for {variant.name}. "
+                    "This usually means the success metric is not binary per denominator unit."
+                )
+        else:
+            if variant.revenue_sum is None or variant.revenue_sum_squares is None:
+                raise ValueError(
+                    f"{label}: ARPU requires revenue_sum and revenue_sum_squares for {variant.name}."
+                )
+            for field_name, val in (
+                ("revenue_sum", variant.revenue_sum),
+                ("revenue_sum_squares", variant.revenue_sum_squares),
+            ):
+                if (
+                    isinstance(val, bool)
+                    or not isinstance(val, (int, float))
+                    or not math.isfinite(val)
+                ):
+                    raise ValueError(
+                        f"{label}: {field_name} must be a finite number for {variant.name}."
+                    )
+
+
+def _resolve_submetric_variants(
+    primary_variants: list[VariantInput],
+    sub_variants: list[VariantInput],
+    metric: str,
+    label: str,
+) -> tuple[list[VariantInput], VariantInput, list[VariantInput]]:
+    primary_names = [v.name for v in primary_variants]
+    if len(set(primary_names)) != len(primary_names):
+        raise ValueError(f"{label} cannot be matched when primary variant names are not unique.")
+
+    sub_names = [v.name for v in sub_variants]
+    if len(set(sub_names)) != len(sub_names):
+        raise ValueError(f"{label} contains duplicate variant names.")
+
+    primary_set = set(primary_names)
+    sub_set = set(sub_names)
+    unknown = sorted(sub_set - primary_set)
+    if unknown:
+        raise ValueError(
+            f"{label} contains unknown variant(s): {', '.join(unknown)}. "
+            f"Expected: {', '.join(primary_names)}."
+        )
+    missing = [name for name in primary_names if name not in sub_set]
+    if missing:
+        raise ValueError(f"{label} is missing variant(s): {', '.join(missing)}.")
+
+    sub_by_name = {v.name: v for v in sub_variants}
+    ordered: list[VariantInput] = []
+    for primary in primary_variants:
+        sub = sub_by_name[primary.name]
+        ordered.append(
+            VariantInput(
+                name=sub.name,
+                visitors=sub.visitors,
+                conversions=sub.conversions,
+                revenue_sum=sub.revenue_sum,
+                revenue_sum_squares=sub.revenue_sum_squares,
+                is_control=primary.is_control,
+            )
+        )
+
+    _validate_variant_metrics(ordered, metric, label)
+    control = [v for v in ordered if v.is_control][0]
+    treatments = [v for v in ordered if not v.is_control]
+    return ordered, control, treatments
+
+
+def _validate_guardrail_item(inp: AnalysisInput, item: GuardrailInput) -> None:
+    if not isinstance(item.name, str) or not item.name.strip():
+        raise ValueError("Guardrail 'name' must be a non-empty string.")
+    label = f"Guardrail {item.name!r}"
+    direction = item.direction.lower().strip()
+    if direction not in {"increase", "decrease"}:
+        raise ValueError(f"guardrail direction must be 'increase' or 'decrease' for {item.name}.")
+    if (
+        isinstance(item.max_relative_change, bool)
+        or not isinstance(item.max_relative_change, (int, float))
+        or not math.isfinite(item.max_relative_change)
+        or item.max_relative_change < 0
+    ):
+        raise ValueError(f"{label}: max_relative_change must be a finite non-negative number.")
+
+    if item.variants is not None:
+        if item.control is not None or item.treatment is not None:
+            raise ValueError(
+                f"{label}: statistical guardrail cannot specify both 'variants' and scalar "
+                "'control'/'treatment'."
+            )
+        if item.metric is None:
+            raise ValueError(
+                f"{label}: statistical guardrail with 'variants' requires 'metric' "
+                "('conversion_rate' or 'arpu')."
+            )
+        _resolve_submetric_variants(inp.variants, item.variants, item.metric, label)
+    else:
+        if item.metric is not None:
+            raise ValueError(f"{label}: 'metric' requires 'variants' for a statistical guardrail.")
+        if item.control is None or item.treatment is None:
+            raise ValueError(
+                f"{label}: threshold guardrail requires numeric 'control' and 'treatment'."
+            )
+        for field_name, val in (("control", item.control), ("treatment", item.treatment)):
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(f"{label}: {field_name} must be a finite number.")
 
 
 def validate_input(inp: AnalysisInput) -> None:
@@ -142,6 +354,16 @@ def validate_input(inp: AnalysisInput) -> None:
                     f"ARPU requires revenue_sum and revenue_sum_squares for {variant.name}."
                 )
 
+    for item in inp.guardrails:
+        _validate_guardrail_item(inp, item)
+
+    for sec in inp.secondary_metrics:
+        if not isinstance(sec.name, str) or not sec.name.strip():
+            raise ValueError("Secondary metric 'name' must be a non-empty string.")
+        _resolve_submetric_variants(
+            inp.variants, sec.variants, sec.metric, f"Secondary metric {sec.name!r}"
+        )
+
 
 def analyze(inp: AnalysisInput) -> AnalysisResult:
     validate_input(inp)
@@ -152,22 +374,16 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     guardrail_results = evaluate_guardrails(inp)
     guardrails_passed = all(g.passed for g in guardrail_results)
     srm_result = evaluate_srm(inp.variants, expected_split=inp.expected_split)
+    comparisons, bayesian_arms = _run_metric_comparisons(inp, control, treatments)
+    secondary_results = evaluate_secondary_metrics(inp)
 
-    bayesian_arms: list[BayesianArmSummary] | None = None
-    if inp.method == "bayesian":
-        comparisons, bayesian_arms = _analyze_bayesian_joint(inp, control, treatments)
-    elif inp.method == "fixed":
-        if inp.primary_metric == "conversion_rate":
-            comparisons = analyze_fixed_conversion(inp, control, treatments)
-        else:
-            comparisons = analyze_fixed_arpu(inp, control, treatments)
-    else:
-        if inp.primary_metric == "conversion_rate":
-            comparisons = analyze_sequential_conversion(inp, control, treatments)
-        else:
-            comparisons = analyze_sequential_arpu(inp, control, treatments)
-
-    recommendation = recommend(inp, comparisons, guardrails_passed, srm_result)
+    recommendation = recommend(
+        inp,
+        comparisons,
+        guardrails_passed,
+        srm_result,
+        guardrails=guardrail_results,
+    )
 
     return AnalysisResult(
         experiment_name=inp.experiment_name,
@@ -180,6 +396,7 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
         srm=srm_result,
         recommendation=recommendation,
         bayesian_arms=bayesian_arms,
+        secondary_metrics=secondary_results,
     )
 
 
@@ -312,20 +529,183 @@ def evaluate_srm(
     )
 
 
+def _run_metric_comparisons(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> tuple[list[ComparisonResult], list[BayesianArmSummary] | None]:
+    if inp.method == "bayesian":
+        comparisons, bayesian_arms = _analyze_bayesian_joint(inp, control, treatments)
+        return comparisons, bayesian_arms
+    if inp.method == "fixed":
+        if inp.primary_metric == "conversion_rate":
+            return analyze_fixed_conversion(inp, control, treatments), None
+        return analyze_fixed_arpu(inp, control, treatments), None
+    if inp.primary_metric == "conversion_rate":
+        return analyze_sequential_conversion(inp, control, treatments), None
+    return analyze_sequential_arpu(inp, control, treatments), None
+
+
+def _submetric_analysis_input(
+    inp: AnalysisInput,
+    *,
+    name: str,
+    metric: str,
+    variants: list[VariantInput],
+) -> AnalysisInput:
+    return AnalysisInput(
+        experiment_name=f"{inp.experiment_name}:{name}",
+        method=inp.method,
+        variants=variants,
+        primary_metric=metric,
+        alpha=inp.alpha,
+        # Sub-metrics use their own scale; do not leak primary metric's sequential_tau.
+        sequential_tau=None,
+        decision_policy=inp.decision_policy,
+        random_seed=inp.random_seed,
+        samples=inp.samples,
+    )
+
+
+def _evaluate_statistical_guardrail(
+    inp: AnalysisInput, item: GuardrailInput, direction: str
+) -> list[GuardrailResult]:
+    assert item.variants is not None
+    assert item.metric is not None
+    ordered, control, treatments = _resolve_submetric_variants(
+        inp.variants, item.variants, item.metric, f"Guardrail {item.name!r}"
+    )
+    sub_inp = _submetric_analysis_input(inp, name=item.name, metric=item.metric, variants=ordered)
+
+    results: list[GuardrailResult] = []
+    if inp.method == "bayesian":
+        control_rate, treatment_rates, control_samples, treatment_samples_list = (
+            _draw_bayesian_samples(sub_inp, control, treatments)
+        )
+        comparisons, _ = _summarize_bayesian_draws(
+            variants=ordered,
+            control=control,
+            treatments=treatments,
+            metric=item.metric,
+            control_rate=control_rate,
+            treatment_rates=treatment_rates,
+            control_samples=control_samples,
+            treatment_samples_list=treatment_samples_list,
+        )
+        prob_threshold = (
+            inp.decision_policy.thresholds.bayes_prob_beats_control
+            if (inp.decision_policy.enabled and inp.decision_policy.thresholds is not None)
+            else (1.0 - inp.alpha)
+        )
+        margin = (
+            item.max_relative_change * abs(control_rate)
+            if control_rate != 0
+            else item.max_relative_change
+        )
+        for comp, t_samples in zip(comparisons, treatment_samples_list, strict=True):
+            diff_samples = t_samples - control_samples
+            if direction == "decrease":
+                prob_regressed = float(np.mean(diff_samples > margin))
+            else:
+                prob_regressed = float(np.mean(diff_samples < -margin))
+            passed = prob_regressed < prob_threshold
+            rel_change = (
+                (comp.treatment_rate - comp.control_rate) / abs(comp.control_rate)
+                if comp.control_rate != 0
+                else (comp.treatment_rate - comp.control_rate)
+            )
+            reason = (
+                f"No statistically significant regression "
+                f"(P(regressed > {item.max_relative_change * 100:.2f}%)={prob_regressed:.3f} "
+                f"< {prob_threshold:.3f})"
+                if passed
+                else f"Statistically significant regression detected "
+                f"(P(regressed > {item.max_relative_change * 100:.2f}%)={prob_regressed:.3f} "
+                f">= {prob_threshold:.3f})"
+            )
+            results.append(
+                GuardrailResult(
+                    name=item.name,
+                    direction=direction,
+                    control=comp.control_rate,
+                    treatment=comp.treatment_rate,
+                    relative_change=float(rel_change),
+                    max_relative_change=item.max_relative_change,
+                    passed=passed,
+                    reason=reason,
+                    variant=comp.treatment,
+                    mode="statistical",
+                    comparison=comp,
+                )
+            )
+        return results
+
+    comparisons, _ = _run_metric_comparisons(sub_inp, control, treatments)
+    for comp in comparisons:
+        margin = (
+            item.max_relative_change * abs(comp.control_rate)
+            if comp.control_rate != 0
+            else item.max_relative_change
+        )
+        if item.max_relative_change == 0.0:
+            if direction == "decrease":
+                regressed = bool(comp.significant and comp.absolute_lift > 0)
+            else:
+                regressed = bool(comp.significant and comp.absolute_lift < 0)
+        elif direction == "decrease":
+            regressed = bool(comp.ci_low is not None and comp.ci_low > margin)
+        else:
+            regressed = bool(comp.ci_high is not None and comp.ci_high < -margin)
+
+        passed = not regressed
+        rel_change = (
+            (comp.treatment_rate - comp.control_rate) / abs(comp.control_rate)
+            if comp.control_rate != 0
+            else (comp.treatment_rate - comp.control_rate)
+        )
+        p_display = f"{comp.p_value:.6g}" if comp.p_value is not None else "n/a"
+        reason = (
+            f"No statistically significant regression beyond "
+            f"{item.max_relative_change * 100:.2f}% (p={p_display})"
+            if passed
+            else f"Statistically significant regression beyond "
+            f"{item.max_relative_change * 100:.2f}% (p={p_display})"
+        )
+        results.append(
+            GuardrailResult(
+                name=item.name,
+                direction=direction,
+                control=comp.control_rate,
+                treatment=comp.treatment_rate,
+                relative_change=float(rel_change),
+                max_relative_change=item.max_relative_change,
+                passed=passed,
+                reason=reason,
+                variant=comp.treatment,
+                mode="statistical",
+                comparison=comp,
+            )
+        )
+    return results
+
+
 def evaluate_guardrails(inp: AnalysisInput) -> list[GuardrailResult]:
     results: list[GuardrailResult] = []
 
     for item in inp.guardrails:
-        if item.control == 0:
-            relative_change = item.treatment - item.control
-        else:
-            relative_change = (item.treatment - item.control) / abs(item.control)
-
         direction = item.direction.lower().strip()
         if direction not in {"increase", "decrease"}:
             raise ValueError(
                 f"guardrail direction must be 'increase' or 'decrease' for {item.name}."
             )
+
+        if item.variants is not None:
+            results.extend(_evaluate_statistical_guardrail(inp, item, direction))
+            continue
+
+        assert item.control is not None and item.treatment is not None
+        if item.control == 0:
+            relative_change = item.treatment - item.control
+        else:
+            relative_change = (item.treatment - item.control) / abs(item.control)
 
         if direction == "decrease":
             passed = relative_change <= item.max_relative_change
@@ -351,6 +731,25 @@ def evaluate_guardrails(inp: AnalysisInput) -> list[GuardrailResult]:
             )
         )
 
+    return results
+
+
+def evaluate_secondary_metrics(inp: AnalysisInput) -> list[SecondaryMetricResult]:
+    results: list[SecondaryMetricResult] = []
+    for sec in inp.secondary_metrics:
+        ordered, control, treatments = _resolve_submetric_variants(
+            inp.variants, sec.variants, sec.metric, f"Secondary metric {sec.name!r}"
+        )
+        sub_inp = _submetric_analysis_input(inp, name=sec.name, metric=sec.metric, variants=ordered)
+        comparisons, bayesian_arms = _run_metric_comparisons(sub_inp, control, treatments)
+        results.append(
+            SecondaryMetricResult(
+                name=sec.name,
+                metric=sec.metric,
+                comparisons=comparisons,
+                bayesian_arms=bayesian_arms,
+            )
+        )
     return results
 
 
@@ -432,9 +831,9 @@ def _summarize_bayesian_draws(
     return comparisons, bayesian_arms
 
 
-def _analyze_bayesian_joint(
+def _draw_bayesian_samples(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
-) -> tuple[list[ComparisonResult], list[BayesianArmSummary]]:
+) -> tuple[float, list[float], np.ndarray, list[np.ndarray]]:
     rng = np.random.default_rng(inp.random_seed)
 
     if inp.primary_metric == "conversion_rate":
@@ -476,6 +875,15 @@ def _analyze_bayesian_joint(
         control_rate = float(control.revenue_sum or 0.0) / control.visitors
         treatment_rates = [float(t.revenue_sum or 0.0) / t.visitors for t in treatments]
 
+    return control_rate, treatment_rates, control_samples, treatment_samples_list
+
+
+def _analyze_bayesian_joint(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> tuple[list[ComparisonResult], list[BayesianArmSummary]]:
+    control_rate, treatment_rates, control_samples, treatment_samples_list = _draw_bayesian_samples(
+        inp, control, treatments
+    )
     return _summarize_bayesian_draws(
         variants=inp.variants,
         control=control,
@@ -1018,14 +1426,14 @@ def recommend(
     comparisons: list[ComparisonResult],
     guardrails_passed: bool,
     srm: SrmResult,
+    *,
+    guardrails: list[GuardrailResult] | None = None,
 ) -> Recommendation | None:
     risk_flags: list[str] = []
     if not srm.passed:
         risk_flags.append("srm_detected")
-    if not guardrails_passed:
-        risk_flags.append("guardrail_failure")
-
-    if not srm.passed:
+        if not guardrails_passed:
+            risk_flags.append("guardrail_failure")
         return Recommendation(
             action="investigate_data_quality",
             rationale="SRM check failed; assignment or tracking may be biased.",
@@ -1034,15 +1442,43 @@ def recommend(
             risk_flags=risk_flags,
         )
 
-    if not guardrails_passed:
+    if guardrails is None:
+        global_guardrail_failed = not guardrails_passed
+        blocked_variants: set[str] = set()
+    else:
+        global_guardrail_failed = any(g.variant is None and not g.passed for g in guardrails)
+        blocked_variants = {g.variant for g in guardrails if g.variant is not None and not g.passed}
+        if not guardrails_passed and not global_guardrail_failed and not blocked_variants:
+            global_guardrail_failed = True
+
+    if global_guardrail_failed:
         return Recommendation(
             action="do_not_ship",
             rationale="One or more guardrails failed. Keep test running or roll back.",
-            # Guardrails are deterministic threshold rules, not statistical tests.
+            # Legacy threshold guardrails are deterministic rules, not statistical tests.
             decision_confidence=1.0,
             next_best_action="Fix guardrail regressions or reduce impact before re-testing.",
-            risk_flags=risk_flags,
+            risk_flags=["guardrail_failure"],
         )
+
+    eligible = [c for c in comparisons if c.treatment not in blocked_variants]
+    excluded = [c.treatment for c in comparisons if c.treatment in blocked_variants]
+
+    if not eligible:
+        return Recommendation(
+            action="do_not_ship",
+            rationale=(
+                f"All treatments failed guardrails ({', '.join(excluded)}). "
+                "Keep test running or roll back."
+            ),
+            decision_confidence=1.0,
+            next_best_action="Fix guardrail regressions or reduce impact before re-testing.",
+            risk_flags=["guardrail_failure"],
+        )
+
+    excluded_note = (
+        f" Excluded due to guardrail failure: {', '.join(excluded)}." if excluded else ""
+    )
 
     if inp.method == "bayesian":
         if not inp.decision_policy.enabled or inp.decision_policy.thresholds is None:
@@ -1053,7 +1489,7 @@ def recommend(
 
         qualifying_winners = [
             c
-            for c in comparisons
+            for c in eligible
             if c.probability_beats_control is not None
             and c.expected_loss is not None
             and c.absolute_lift > 0
@@ -1078,33 +1514,34 @@ def recommend(
                 and winner.multi_arm_expected_loss is not None
                 else ""
             )
+            flags = risk_flags + (["other_variant_guardrail_failure"] if excluded else [])
             return Recommendation(
                 action=f"ship_{winner.treatment}",
                 rationale=(
                     f"{winner.treatment} passes Bayesian thresholds "
                     f"(P(win)={winner.probability_beats_control:.3f}, "
-                    f"expected_loss={winner.expected_loss:.6f}{multi_arm_detail})."
+                    f"expected_loss={winner.expected_loss:.6f}{multi_arm_detail}).{excluded_note}"
                 ),
                 decision_confidence=float(winner.probability_beats_control or 0.0),
                 next_best_action="Roll out gradually and monitor guardrails.",
-                risk_flags=risk_flags,
+                risk_flags=flags,
             )
 
         qualifying_losers = [
             c
-            for c in comparisons
+            for c in eligible
             if c.probability_beats_control is not None
             and c.expected_loss is not None
             and c.absolute_lift < 0
             and c.probability_beats_control <= (1.0 - prob_threshold)
         ]
-        if qualifying_losers and len(qualifying_losers) == len(comparisons):
+        if qualifying_losers and len(qualifying_losers) == len(eligible):
             if len(qualifying_losers) == 1:
                 loser = qualifying_losers[0]
                 rationale = (
                     f"{loser.treatment} is unlikely to beat control "
                     f"(P(win)={loser.probability_beats_control:.3f}, "
-                    f"expected_loss={loser.expected_loss:.6f})."
+                    f"expected_loss={loser.expected_loss:.6f}).{excluded_note}"
                 )
             else:
                 worst = min(qualifying_losers, key=lambda x: x.absolute_lift)
@@ -1112,46 +1549,54 @@ def recommend(
                     f"Every treatment is unlikely to beat control "
                     f"(worst: {worst.treatment}, "
                     f"P(win)={worst.probability_beats_control:.3f}, "
-                    f"expected_loss={worst.expected_loss:.6f})."
+                    f"expected_loss={worst.expected_loss:.6f}).{excluded_note}"
                 )
             max_p_win = max(c.probability_beats_control or 0.0 for c in qualifying_losers)
+            flags = risk_flags + (["guardrail_failure"] if excluded else [])
             return Recommendation(
                 action="do_not_ship",
                 rationale=rationale,
                 decision_confidence=float(1.0 - max_p_win),
                 next_best_action="Keep the control, or redefine the metric and test design before rerunning.",
-                risk_flags=risk_flags,
+                risk_flags=flags,
             )
 
         leading_prob = max(
             (
                 c.probability_beats_control
-                for c in comparisons
+                for c in eligible
                 if c.probability_beats_control is not None
             ),
             default=0.5,
         )
+        flags = risk_flags + (["some_variants_guardrail_failure"] if excluded else [])
         return Recommendation(
             action="continue_collecting_data",
-            rationale="Bayesian confidence or expected loss thresholds were not met.",
+            rationale=(
+                f"Bayesian confidence or expected loss thresholds were not met.{excluded_note}"
+            ),
             decision_confidence=float(leading_prob),
             next_best_action="Collect more samples until decision thresholds are reached.",
-            risk_flags=risk_flags,
+            risk_flags=flags,
         )
 
-    winners = [c for c in comparisons if c.significant and c.absolute_lift > 0]
-    losers = [c for c in comparisons if c.significant and c.absolute_lift < 0]
+    winners = [c for c in eligible if c.significant and c.absolute_lift > 0]
+    losers = [c for c in eligible if c.significant and c.absolute_lift < 0]
 
     if inp.method == "fixed":
         if winners:
             winner = max(winners, key=lambda x: x.absolute_lift)
-            flags = risk_flags + (["other_variant_significantly_worse"] if losers else [])
+            flags = list(risk_flags)
+            if losers:
+                flags.append("other_variant_significantly_worse")
+            if excluded:
+                flags.append("other_variant_guardrail_failure")
             return Recommendation(
                 action=f"ship_{winner.treatment}",
                 rationale=(
                     f"Fixed-horizon significance reached for {winner.treatment} "
                     f"(adjusted p={winner.p_value:.6g} <= alpha={inp.alpha:g}). "
-                    "Valid only when evaluated once at the planned experiment end."
+                    f"Valid only when evaluated once at the planned experiment end.{excluded_note}"
                 ),
                 decision_confidence=float(1.0 - (winner.p_value or 0.0)),
                 next_best_action=(
@@ -1161,75 +1606,90 @@ def recommend(
                 risk_flags=flags,
             )
 
-        if losers and len(losers) == len(comparisons):
+        if losers and len(losers) == len(eligible):
             worst = min(losers, key=lambda x: x.absolute_lift)
+            flags = risk_flags + (["guardrail_failure"] if excluded else [])
             return Recommendation(
                 action="do_not_ship",
                 rationale=(
                     f"Fixed-horizon significant negative lift detected for every treatment "
                     f"(worst: {worst.treatment}, adjusted p={worst.p_value:.6g} "
                     f"<= alpha={inp.alpha:g}). "
-                    "Valid only when evaluated once at the planned experiment end."
+                    f"Valid only when evaluated once at the planned experiment end.{excluded_note}"
                 ),
                 decision_confidence=float(1.0 - max(c.p_value or 0.0 for c in losers)),
                 next_best_action="Keep the control and investigate adverse drivers before re-testing.",
-                risk_flags=risk_flags,
+                risk_flags=flags,
             )
 
+        flags = list(risk_flags)
         if losers:
-            risk_flags = risk_flags + ["some_variants_significantly_worse"]
+            flags.append("some_variants_significantly_worse")
+        if excluded:
+            flags.append("some_variants_guardrail_failure")
 
-        best_p = min((c.p_value for c in comparisons if c.p_value is not None), default=1.0)
+        best_p = min((c.p_value for c in eligible if c.p_value is not None), default=1.0)
         return Recommendation(
             action="do_not_ship",
             rationale=(
                 f"No treatment reached fixed-horizon significance at the planned look "
                 f"(min adjusted p={best_p:.6g} > alpha={inp.alpha:g}). "
-                "Fixed-horizon results are only valid for a single planned evaluation."
+                f"Fixed-horizon results are only valid for a single planned evaluation.{excluded_note}"
             ),
             decision_confidence=float(1.0 - best_p),
             next_best_action=(
                 "Keep the control rather than peeking repeatedly; use --method sequential "
                 "for continuous monitoring or plan a new fixed-horizon run."
             ),
-            risk_flags=risk_flags,
+            risk_flags=flags,
         )
 
     if winners:
         winner = max(winners, key=lambda x: x.absolute_lift)
-        flags = risk_flags + (["other_variant_significantly_worse"] if losers else [])
+        flags = list(risk_flags)
+        if losers:
+            flags.append("other_variant_significantly_worse")
+        if excluded:
+            flags.append("other_variant_guardrail_failure")
         return Recommendation(
             action=f"ship_{winner.treatment}",
             rationale=(
                 f"mSPRT significance reached for {winner.treatment} "
                 f"(e-value={winner.e_value:.3f} >= threshold={winner.e_threshold:.1f})."
+                f"{excluded_note}"
             ),
             decision_confidence=float(1.0 - (winner.p_value or 0.0)),
             next_best_action="Roll out gradually and continue guardrail monitoring.",
             risk_flags=flags,
         )
 
-    if losers and len(losers) == len(comparisons):
+    if losers and len(losers) == len(eligible):
         worst = min(losers, key=lambda x: x.absolute_lift)
+        flags = risk_flags + (["guardrail_failure"] if excluded else [])
         return Recommendation(
             action="stop_and_rollback",
             rationale=(
                 f"Significant negative lift detected for every treatment "
                 f"(worst: {worst.treatment}, e-value={worst.e_value:.3f} "
-                f">= threshold={worst.e_threshold:.1f})."
+                f">= threshold={worst.e_threshold:.1f}).{excluded_note}"
             ),
             decision_confidence=float(1.0 - max(c.p_value or 0.0 for c in losers)),
             next_best_action="Roll back treatments and investigate adverse drivers.",
-            risk_flags=risk_flags,
+            risk_flags=flags,
         )
 
+    flags = list(risk_flags)
     if losers:
-        risk_flags = risk_flags + ["some_variants_significantly_worse"]
+        flags.append("some_variants_significantly_worse")
+    if excluded:
+        flags.append("some_variants_guardrail_failure")
 
-    best_p = min((c.p_value for c in comparisons if c.p_value is not None), default=1.0)
+    best_p = min((c.p_value for c in eligible if c.p_value is not None), default=1.0)
     return Recommendation(
         action="continue_collecting_data",
-        rationale="mSPRT significance threshold not reached yet; it is safe to keep looking.",
+        rationale=(
+            f"mSPRT significance threshold not reached yet; it is safe to keep looking.{excluded_note}"
+        ),
         # Strength of evidence for the leading comparison (1 - always-valid p-value), on the
         # same scale as the ship/rollback confidences. It stays below 1 - alpha here.
         decision_confidence=float(1.0 - best_p),
@@ -1237,5 +1697,5 @@ def recommend(
             "Collect more data and re-run; the always-valid test controls the error rate "
             "no matter how often you look."
         ),
-        risk_flags=risk_flags,
+        risk_flags=flags,
     )

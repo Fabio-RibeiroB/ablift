@@ -285,10 +285,13 @@ def example_payload() -> dict:
         "guardrails": [
             {
                 "name": "bounce_rate",
-                "control": 0.36,
-                "treatment": 0.365,
+                "metric": "conversion_rate",
                 "direction": "decrease",
                 "max_relative_change": 0.03,
+                "variants": [
+                    {"name": "control", "visitors": 100000, "conversions": 36000},
+                    {"name": "treatment_a", "visitors": 100000, "conversions": 36500},
+                ],
             },
             {
                 "name": "p95_latency_ms",
@@ -297,6 +300,26 @@ def example_payload() -> dict:
                 "direction": "decrease",
                 "max_relative_change": 0.05,
             },
+        ],
+        "secondary_metrics": [
+            {
+                "name": "revenue_per_visitor",
+                "metric": "arpu",
+                "variants": [
+                    {
+                        "name": "control",
+                        "visitors": 100000,
+                        "revenue_sum": 480000.0,
+                        "revenue_sum_squares": 28800000.0,
+                    },
+                    {
+                        "name": "treatment_a",
+                        "visitors": 100000,
+                        "revenue_sum": 505000.0,
+                        "revenue_sum_squares": 30500000.0,
+                    },
+                ],
+            }
         ],
         "decision_policy": {
             "enabled": True,
