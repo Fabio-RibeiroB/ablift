@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from statistics import NormalDist
 from typing import Any
 
 import numpy as np
 
-from .engine import sample_mean_posterior
+from .engine import sample_mean_posterior_from_moments
 
 
 @dataclass
@@ -215,6 +216,52 @@ def sequential_duration_conversion(
     )
 
 
+def _first_day_reaching(
+    target: float, days: list[int], assurance_at: Callable[[int], float]
+) -> tuple[int, float] | None:
+    """Earliest day whose simulated assurance reaches ``target``, or None within ``days``.
+
+    Assurance rises with sample size, so this doubles the index until the target is met and
+    then bisects, needing O(log len(days)) simulations instead of one per day.
+    """
+    cache: dict[int, float] = {}
+
+    def at(i: int) -> float:
+        if i not in cache:
+            cache[i] = assurance_at(days[i])
+        return cache[i]
+
+    if not days:
+        return None
+    lo, hi = -1, 0
+    while at(hi) < target:
+        if hi == len(days) - 1:
+            return None
+        lo, hi = hi, min(2 * hi + 1, len(days) - 1)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if at(mid) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return days[hi], at(hi)
+
+
+def _decision_rate(
+    c_draws: np.ndarray,
+    t_draws: np.ndarray,
+    t_beats_c: np.ndarray,
+    prob_threshold: float,
+    max_expected_loss: float,
+) -> float:
+    """Share of simulated experiments (rows) that meet the Bayesian ship thresholds."""
+    p_win = (t_draws > c_draws).mean(axis=1)
+    expected_loss = np.maximum(c_draws - t_draws, 0.0).mean(axis=1)
+    return float(
+        np.mean((p_win >= prob_threshold) & (expected_loss <= max_expected_loss) & t_beats_c)
+    )
+
+
 def bayesian_duration_conversion(
     baseline_rate: float,
     relative_mde: float,
@@ -240,33 +287,21 @@ def bayesian_duration_conversion(
     daily_per_variant = daily_total_traffic / n_variants
     candidates = list(range(max(step_days, 1), max_days + 1, max(step_days, 1)))
 
-    selected_day = None
-    selected_assurance = None
-    selected_n = None
+    def n_on(day: int) -> int:
+        return int(max(1, round(day * daily_per_variant)))
 
-    for day in candidates:
-        n = int(max(1, round(day * daily_per_variant)))
-        wins = 0
+    def assurance_at(day: int) -> float:
+        n = n_on(day)
+        c = rng.binomial(n, p_control, size=(sims, 1))
+        t = rng.binomial(n, p_treatment, size=(sims, 1))
+        c_draws = rng.beta(1 + c, 1 + (n - c), size=(sims, posterior_draws))
+        t_draws = rng.beta(1 + t, 1 + (n - t), size=(sims, posterior_draws))
+        return _decision_rate(c_draws, t_draws, (t > c)[:, 0], prob_threshold, max_expected_loss)
 
-        for _ in range(sims):
-            c = rng.binomial(n, p_control)
-            t = rng.binomial(n, p_treatment)
-
-            c_samps = rng.beta(1 + c, 1 + (n - c), size=posterior_draws)
-            t_samps = rng.beta(1 + t, 1 + (n - t), size=posterior_draws)
-
-            p_win = float(np.mean(t_samps > c_samps))
-            expected_loss = float(np.mean(np.maximum(c_samps - t_samps, 0.0)))
-
-            if p_win >= prob_threshold and expected_loss <= max_expected_loss and t > c:
-                wins += 1
-
-        assurance = wins / sims
-        if assurance >= assurance_target:
-            selected_day = float(day)
-            selected_assurance = assurance
-            selected_n = n
-            break
+    found = _first_day_reaching(assurance_target, candidates, assurance_at)
+    selected_day = float(found[0]) if found else None
+    selected_assurance = found[1] if found else None
+    selected_n = n_on(found[0]) if found else None
 
     return DurationPlan(
         method="bayesian",
@@ -446,43 +481,31 @@ def bayesian_duration_arpu(
     daily_per_variant = daily_total_traffic / n_variants
     candidates = list(range(max(step_days, 1), max_days + 1, max(step_days, 1)))
 
-    selected_day = None
-    selected_assurance = None
-    selected_n = None
     var = sd * sd
 
-    for day in candidates:
-        n = int(max(1, round(day * daily_per_variant)))
+    def n_on(day: int) -> int:
+        return int(max(1, round(day * daily_per_variant)))
+
+    def assurance_at(day: int) -> float:
+        n = n_on(day)
+        # Exact sufficient statistics for normal data in O(1) regardless of n:
+        # x_bar ~ N(mu, sd^2 / n) independently of centered SS ~ sd^2 * chi2(n - 1).
         mean_se = sd / math.sqrt(n)
-        wins = 0
+        c_mean = rng.normal(mu_control, mean_se, size=(sims, 1))
+        t_mean = rng.normal(mu_treatment, mean_se, size=(sims, 1))
+        c_ss = var * rng.chisquare(n - 1, size=(sims, 1)) if n > 1 else np.zeros((sims, 1))
+        t_ss = var * rng.chisquare(n - 1, size=(sims, 1)) if n > 1 else np.zeros((sims, 1))
+        shape = (sims, posterior_draws)
+        c_draws = sample_mean_posterior_from_moments(n, c_mean, c_ss, shape, rng)
+        t_draws = sample_mean_posterior_from_moments(n, t_mean, t_ss, shape, rng)
+        return _decision_rate(
+            c_draws, t_draws, (t_mean > c_mean)[:, 0], prob_threshold, max_expected_loss
+        )
 
-        for _ in range(sims):
-            # Exact sufficient statistics for normal draws in O(1) regardless of n:
-            # x_bar ~ N(mu, sd^2 / n) independently of centered SS ~ sd^2 * chi2(n - 1).
-            c_mean = float(rng.normal(mu_control, mean_se))
-            t_mean = float(rng.normal(mu_treatment, mean_se))
-            c_ss = var * float(rng.chisquare(n - 1)) if n > 1 else 0.0
-            t_ss = var * float(rng.chisquare(n - 1)) if n > 1 else 0.0
-
-            c_samps = sample_mean_posterior(
-                n, n * c_mean, c_ss + n * (c_mean**2), posterior_draws, rng
-            )
-            t_samps = sample_mean_posterior(
-                n, n * t_mean, t_ss + n * (t_mean**2), posterior_draws, rng
-            )
-
-            p_win = float(np.mean(t_samps > c_samps))
-            expected_loss = float(np.mean(np.maximum(c_samps - t_samps, 0.0)))
-
-            if p_win >= prob_threshold and expected_loss <= max_expected_loss and t_mean > c_mean:
-                wins += 1
-
-        assurance = wins / sims
-        if assurance >= assurance_target:
-            selected_day = float(day)
-            selected_assurance = assurance
-            selected_n = n
-            break
+    found = _first_day_reaching(assurance_target, candidates, assurance_at)
+    selected_day = float(found[0]) if found else None
+    selected_assurance = found[1] if found else None
+    selected_n = n_on(found[0]) if found else None
 
     assumptions: dict[str, Any] = {
         "metric": "arpu",
