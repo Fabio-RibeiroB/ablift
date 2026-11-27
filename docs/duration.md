@@ -28,7 +28,7 @@ cat examples/duration_inputs.csv | ablift duration --input - --input-format csv
 Methods:
 - `sequential` (default): smallest sample size per variant at which the always-valid mSPRT test reaches the target power. This is a conservative upper bound, since the test may stop earlier if the true effect exceeds the MDE. Diagnostics include `fixed_horizon_n_per_variant` and `sequential_inflation` (typically about 2x).
 - `fixed`: classic fixed-horizon sample size (two-proportion z test for `conversion_rate`, two-sample z test for `arpu`). Only valid if you analyze once. The output reports `"method": "fixed_horizon"`.
-- `bayesian`: simulation-based assurance, the probability of reaching the Bayesian decision thresholds within `--max-days` (Beta-Binomial for `conversion_rate`, Normal-Inverse-Gamma for `arpu`).
+- `bayesian`: simulation-based assurance, the probability of reaching the Bayesian decision thresholds within `--max-days`. Simulations are vectorised and the earliest qualifying day is found by doubling then bisecting, so even a 365-day horizon plans in about a second (Beta-Binomial for `conversion_rate`, Normal-Inverse-Gamma for `arpu`).
 
 Both `sequential` and `fixed` apply a Bonferroni correction across `n_variants - 1` comparisons.
 

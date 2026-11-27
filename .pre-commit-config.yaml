@@ -1,14 +1,17 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
-    hooks:
-      - id: ruff-check
-        args: [--fix]
-        types_or: [python, pyi]
-      - id: ruff-format
-        types_or: [python, pyi]
+  # Ruff runs from uv.lock so the hook, `make lint` and CI always use the same version.
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
       - id: ty-check
         name: ty check
         entry: uv run --group lint ty check

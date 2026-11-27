@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Very large `--samples` crashed with a Python `MemoryError` traceback (200M samples needs 1.5 GB per arm). Bayesian runs now reject `samples × variants` above 20,000,000 with a message giving the maximum, and any out-of-memory condition becomes a clean `Error:` with exit code 1.
+- `--bootstrap-samples` had no upper bound: 2,000,000 resamples of 40,000 rows ran for minutes with no output. Requests above 1,000,000,000 resampled rows are now a usage error (exit 2) that states the maximum for the data.
+
+### Changed
+- `duration --method bayesian` is about 25x faster: simulations are vectorised, and the earliest day reaching the assurance target is found by doubling then bisecting instead of scanning every day. A 1% MDE over 365 days went from 37 s to 1.5 s; results agree with the previous scan within simulation noise.
+
 ### Documentation
 - README rewritten as a front page with a demo image rendered from a real run; reference material moved to `docs/` (inputs, methods, duration planning, agents).
 - `tests/test_docs.py`, also run as a pre-commit hook, fails when a CLI command or option is undocumented, a documented example stops running, a link breaks, the install line does not match the release state, or the demo image is stale (`make docs`).

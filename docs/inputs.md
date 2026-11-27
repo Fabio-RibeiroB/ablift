@@ -23,7 +23,7 @@ Use `primary_metric: "arpu"` (average revenue per visitor) when you have row-lev
 For heavy-tailed row-level ARPU data (e.g. whale-dominated revenue):
 - Pass `--winsorize Q` (with `0.5 < Q < 1.0`, e.g. `--winsorize 0.99`) to cap outcomes at the **pooled** Q-quantile across all variants before analysis (preventing any arm from shifting its own cap). Cap value, capped counts, and variance reduction are recorded in `analysis_settings.input_interpretation.winsorization`. Passing `--winsorize` with aggregated inputs or non-ARPU metrics exits with a usage error (exit code 2).
 - `ablift` automatically checks ARPU tail heaviness (exact skewness, max/mean ratio, and Kohavi's $355 g_1^2$ CLT rule for row-level data; CV $> 3.0$ for aggregated data) and attaches `heavy_tailed_revenue` to `recommendation.risk_flags` and `analysis_settings.input_interpretation.arpu_tail_diagnostics` when tails are heavy.
-- Optionally pass `--bootstrap-samples N` (`>= 100`) on row-level ARPU inputs to compute a percentile bootstrap confidence interval cross-check in `analysis_settings.input_interpretation.bootstrap_ci`.
+- Optionally pass `--bootstrap-samples N` (`>= 100`, and at most 1,000,000,000 resampled rows in total, about 10 s of CPU; larger values are a usage error that states the maximum for your data) on row-level ARPU inputs to compute a percentile bootstrap confidence interval cross-check in `analysis_settings.input_interpretation.bootstrap_ci`.
 
 Use `primary_metric: "ratio"` when your randomization unit (e.g. `visitors` / users) differs from the metric denominator — such as click-through rate (clicks / impressions), average order value (revenue / orders), or pages per session. `ablift` estimates the variance via the bivariate Delta method (Deng, Knoblich & Lu 2018) across randomization units so intra-user correlation is accounted for accurately across `bayesian`, `sequential`, and `fixed` modes, as well as statistical guardrails and secondary metrics.
 
@@ -57,7 +57,7 @@ For analysis inputs:
 - for `ratio`, each variant must include `numerator_sum`, `numerator_sum_squares`, `denominator_sum`, `denominator_sum_squares`, and `numerator_denominator_sum`
 
 Bayesian defaults:
-- posterior sample count defaults to `50000`
+- posterior sample count defaults to `50000`, and `samples × variants` may not exceed 20,000,000 (about 160 MB per array); larger values are rejected with the maximum for your variant count
 - random seed defaults to `7`
 - conversion-rate prior is `Beta(1, 1)`
 - ARPU prior is a weak `Normal-Inverse-Gamma` prior with `mu0=0`, `kappa0=1e-6`, `alpha0=1`, `beta0=1`
