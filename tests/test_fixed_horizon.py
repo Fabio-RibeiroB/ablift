@@ -43,7 +43,7 @@ class StudentTReferenceTests(unittest.TestCase):
 
 
 class FixedHorizonConversionTests(unittest.TestCase):
-    def test_two_variant_matches_statsmodels_ztest_and_unpooled_ci(self):
+    def test_two_variant_matches_statsmodels_ztest_and_newcombe_ci(self):
         cases = [
             (10_000, 500, 10_000, 620, 0.05),
             (5_000, 200, 7_500, 270, 0.01),
@@ -66,7 +66,7 @@ class FixedHorizonConversionTests(unittest.TestCase):
                 comp = result.comparisons[0]
                 ref_z, ref_p = proportions_ztest([x2, x1], [n2, n1])
                 ref_ci_low, ref_ci_high = confint_proportions_2indep(
-                    x2, n2, x1, n1, method="wald", compare="diff", alpha=alpha
+                    x2, n2, x1, n1, method="newcombe", compare="diff", alpha=alpha
                 )
 
                 self.assertAlmostEqual(comp.test_statistic, float(ref_z), places=10)
@@ -144,7 +144,7 @@ class FixedHorizonConversionTests(unittest.TestCase):
 
         # Simultaneous Bonferroni CI matches statsmodels at alpha / 2.
         ref_lo, ref_hi = confint_proportions_2indep(
-            565, 10000, 500, 10000, method="wald", compare="diff", alpha=0.025
+            565, 10000, 500, 10000, method="newcombe", compare="diff", alpha=0.025
         )
         self.assertAlmostEqual(comp_v1.ci_low, float(ref_lo), places=10)
         self.assertAlmostEqual(comp_v1.ci_high, float(ref_hi), places=10)
@@ -165,8 +165,10 @@ class FixedHorizonConversionTests(unittest.TestCase):
         comp = result.comparisons[0]
         self.assertAlmostEqual(comp.p_value, 1.0)
         self.assertFalse(comp.significant)
-        self.assertEqual(comp.ci_low, 0.0)
-        self.assertEqual(comp.ci_high, 0.0)
+        # 0/500 vs 0/500 is not certainty of zero difference (Wald gave [0, 0], see #38).
+        self.assertLess(comp.ci_low, -0.005)
+        self.assertGreater(comp.ci_high, 0.005)
+        self.assertIn("sparse_conversions", result.recommendation.risk_flags)
 
 
 class FixedHorizonArpuTests(unittest.TestCase):
