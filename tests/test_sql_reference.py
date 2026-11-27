@@ -209,15 +209,18 @@ def test_reference_cuped_sql_aggregates_match_hand_computed_values_and_pipe_into
         "revenue_sum_squares",
         "covariate_sum",
         "covariate_sum_squares",
-        "outcome_covariate_sum",
+        "revenue_covariate_sum",
+        "conversion_covariate_sum",
     ]
     assert len(rows) == 2
 
     # Hand-computed from per-unit pre/post revenue pairs:
     # control:   (y, x) = [(0,5), (0,0), (20,10), (40,30), (10,0)]
-    #   cov_sum = 45, cov_sum_sq = 1025, outcome_cov_sum = 0+0+200+1200+0 = 1400
+    #   cov_sum = 45, cov_sum_sq = 1025, revenue_cov_sum = 0+0+200+1200+0 = 1400
+    #   converted = [0,0,1,1,1] -> conversion_cov_sum = 10+30+0 = 40
     # treatment: (y, x) = [(0,0), (30,15), (35,20), (50,25), (0,4)]
-    #   cov_sum = 64, cov_sum_sq = 1266, outcome_cov_sum = 0+450+700+1250+0 = 2400
+    #   cov_sum = 64, cov_sum_sq = 1266, revenue_cov_sum = 0+450+700+1250+0 = 2400
+    #   converted = [0,1,1,1,0] -> conversion_cov_sum = 15+20+25 = 60
     records = [dict(zip(columns, row, strict=True)) for row in rows]
     by_name = {rec["name"]: rec for rec in records}
 
@@ -228,7 +231,8 @@ def test_reference_cuped_sql_aggregates_match_hand_computed_values_and_pipe_into
     assert ctrl["revenue_sum_squares"] == pytest.approx(2100.0)
     assert ctrl["covariate_sum"] == pytest.approx(45.0)
     assert ctrl["covariate_sum_squares"] == pytest.approx(1025.0)
-    assert ctrl["outcome_covariate_sum"] == pytest.approx(1400.0)
+    assert ctrl["revenue_covariate_sum"] == pytest.approx(1400.0)
+    assert ctrl["conversion_covariate_sum"] == pytest.approx(40.0)
 
     trt = by_name["treatment"]
     assert trt["visitors"] == 5
@@ -237,24 +241,47 @@ def test_reference_cuped_sql_aggregates_match_hand_computed_values_and_pipe_into
     assert trt["revenue_sum_squares"] == pytest.approx(4625.0)
     assert trt["covariate_sum"] == pytest.approx(64.0)
     assert trt["covariate_sum_squares"] == pytest.approx(1266.0)
-    assert trt["outcome_covariate_sum"] == pytest.approx(2400.0)
+    assert trt["revenue_covariate_sum"] == pytest.approx(2400.0)
+    assert trt["conversion_covariate_sum"] == pytest.approx(60.0)
 
-    payload = {
-        "experiment_name": "sql_cuped_fixture",
-        "method": "sequential",
-        "primary_metric": "arpu",
-        "variants": [{**rec, "is_control": rec["name"] == "control"} for rec in records],
-    }
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["analyze", "--input", "-"],
-        input=json.dumps(payload),
+    # Each metric takes its own cross-product as outcome_covariate_sum, as the doc says.
+    for metric, cross in (
+        ("arpu", "revenue_covariate_sum"),
+        ("conversion_rate", "conversion_covariate_sum"),
+    ):
+        variants = [
+            {
+                **{k: v for k, v in rec.items() if not k.endswith("_covariate_sum")},
+                "outcome_covariate_sum": rec[cross],
+                "is_control": rec["name"] == "control",
+            }
+            for rec in records
+        ]
+        payload = {
+            "experiment_name": "sql_cuped_fixture",
+            "method": "sequential",
+            "primary_metric": metric,
+            "variants": variants,
+        }
+        result = CliRunner().invoke(cli, ["analyze", "--input", "-"], input=json.dumps(payload))
+        assert result.exit_code == 0, (metric, result.output)
+        out = json.loads(result.output)
+        assert out["srm"]["observed"] == [5, 5]
+        assert "cuped" in out["analysis_settings"]["input_interpretation"]
+
+
+def test_documented_is_control_column_is_accepted() -> None:
+    """The doc's `CASE WHEN ... THEN 1 ELSE 0 END AS is_control` column must parse."""
+    csv_text = (
+        "name,visitors,conversions,revenue_sum,revenue_sum_squares,is_control\n"
+        "baseline,5,3,70.0,2100.0,1\n"
+        "treatment,5,3,115.0,4625.0,0\n"
+    )
+    result = CliRunner().invoke(
+        cli, ["analyze", "--input", "-", "--input-format", "csv"], input=csv_text
     )
     assert result.exit_code == 0, result.output
-    out = json.loads(result.output)
-    assert out["srm"]["observed"] == [5, 5]
-    assert "cuped" in out["analysis_settings"]["input_interpretation"]
+    assert json.loads(result.output)["comparisons"][0]["control"] == "baseline"
 
 
 def test_documented_cuped_json_example_runs_through_cli() -> None:

@@ -64,7 +64,9 @@ ORDER BY
     name;
 ```
 
-Without an `is_control` column, `ablift` treats the first row as control. The `ORDER BY` places `'control'` first; if your control arm has another name, either adjust the `ORDER BY` or append an `is_control` boolean column at the end.
+Without an `is_control` column, `ablift` treats the first row as control. The `ORDER BY` places `'control'` first; if your control arm has another name, either adjust the `ORDER BY` or append a last column `CASE WHEN name = 'baseline' THEN 1 ELSE 0 END AS is_control`. Use `1`/`0` rather than a SQL boolean: `psql` prints booleans as `t`/`f`, which `ablift` does not accept, while `1`/`0` is accepted in a column whose header contains "control".
+
+The outcome window here is open-ended: every order after a unit's first exposure counts. For a fixed analysis window, add `AND o.ordered_at < <experiment_end>` (or a per-unit window such as 7 days after exposure; interval syntax differs between warehouses) to the `LEFT JOIN ... ON` condition, never to `WHERE`. An order whose `revenue` is `NULL` still counts as a conversion and adds `0` revenue; filter such orders in the `ON` condition if they are not real purchases.
 
 ## Piping CSV into `ablift analyze`
 
@@ -91,7 +93,7 @@ duckdb -csv experiment.duckdb < query.sql \
 
 ## Optional CUPED variant
 
-For [CUPED variance reduction](inputs.md#json-input) on `arpu` or `conversion_rate`, add a strictly pre-experiment covariate `X` (for example, each user's revenue before `first_exposed_at`) and compute three additional per-variant sums: `covariate_sum`, `covariate_sum_squares`, and `outcome_covariate_sum`.
+For [CUPED variance reduction](inputs.md#json-input) on `arpu` or `conversion_rate`, add a strictly pre-experiment covariate `X` (for example, each user's revenue before `first_exposed_at`) and compute the per-variant sums `covariate_sum`, `covariate_sum_squares` and a cross-product with the outcome. The outcome differs by metric, so the query returns both cross-products: use `revenue_covariate_sum` (revenue × X) as `outcome_covariate_sum` for `arpu`, and `conversion_covariate_sum` (converted × X) for `conversion_rate`. Using the wrong one silently miscalculates the adjustment.
 
 ```sql
 WITH clean_units AS (
@@ -108,6 +110,8 @@ unit_metrics AS (
     -- on a single LEFT JOIN to avoid join fan-out:
     --   ordered_at <  first_exposed_at -> pre-experiment covariate X
     --   ordered_at >= first_exposed_at -> post-exposure outcome Y
+    -- Consider bounding both: a fixed lookback for X (e.g. 28 days) and a fixed
+    -- outcome window for Y, added to the LEFT JOIN ON condition.
     SELECT
         u.user_id,
         u.variant,
@@ -137,9 +141,10 @@ variant_aggregates AS (
         SUM(unit_revenue * unit_revenue) AS revenue_sum_squares,
         SUM(covariate) AS covariate_sum,
         SUM(covariate * covariate) AS covariate_sum_squares,
-        -- For primary_metric = "arpu", Y is unit_revenue.
-        -- For primary_metric = "conversion_rate", use SUM(converted * covariate) instead.
-        SUM(unit_revenue * covariate) AS outcome_covariate_sum
+        -- outcome_covariate_sum for primary_metric = "arpu":
+        SUM(unit_revenue * covariate) AS revenue_covariate_sum,
+        -- outcome_covariate_sum for primary_metric = "conversion_rate":
+        SUM(converted * covariate) AS conversion_covariate_sum
     FROM unit_metrics
     GROUP BY variant
 )
@@ -151,14 +156,15 @@ SELECT
     revenue_sum_squares,
     covariate_sum,
     covariate_sum_squares,
-    outcome_covariate_sum
+    revenue_covariate_sum,
+    conversion_covariate_sum
 FROM variant_aggregates
 ORDER BY
     CASE WHEN name = 'control' THEN 0 ELSE 1 END,
     name;
 ```
 
-Aggregated CUPED requires **JSON** input (for row-level CSV/XLSX input, pass `--covariate-column` instead; see [Inputs](inputs.md#json-input)). Map each row returned by the query to an entry in `variants`:
+Aggregated CUPED requires **JSON** input (for row-level CSV/XLSX input, pass `--covariate-column` instead; see [Inputs](inputs.md#json-input)). Map each row returned by the query to an entry in `variants`, setting `outcome_covariate_sum` from `revenue_covariate_sum` for `arpu` (as below) or from `conversion_covariate_sum` for `conversion_rate`:
 
 ```json
 {
