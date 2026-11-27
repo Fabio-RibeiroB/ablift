@@ -29,6 +29,7 @@ from .planning import (
     sequential_duration_conversion,
 )
 from .reporting import build_markdown_report
+from .schemas import SCHEMA_NAMES, get_all_schemas, get_schema
 
 ANALYZE_EPILOG = """\b
 Examples:
@@ -428,7 +429,7 @@ def cli() -> None:
     "--experiment-name",
     required=False,
     default=None,
-    help="Optional experiment name override for CSV/XLSX input.",
+    help="Optional experiment name override (applies to JSON, CSV/XLSX, and stdin inputs).",
 )
 @click.option(
     "--method",
@@ -443,12 +444,12 @@ def cli() -> None:
     "--primary-metric",
     type=click.Choice(["conversion_rate", "arpu"]),
     default=None,
-    help="Optional metric override for CSV/XLSX input.",
+    help="Optional primary metric override (applies to JSON, CSV/XLSX, and stdin inputs).",
 )
 @click.option(
     "--enable-recommendation/--no-recommendation",
     default=None,
-    help="Enable or disable automated recommendation output.",
+    help="Enable or disable automated Bayesian recommendation output (overrides input and config).",
 )
 @click.option(
     "--prob-threshold",
@@ -462,7 +463,12 @@ def cli() -> None:
     default=None,
     help="Bayesian expected-loss threshold for recommendations.",
 )
-@click.option("--alpha", type=float, default=None, help="Optional alpha override.")
+@click.option(
+    "--alpha",
+    type=float,
+    default=None,
+    help="Optional family-wise alpha override (overrides input and config).",
+)
 @click.option(
     "--sequential-tau",
     type=float,
@@ -938,6 +944,48 @@ def doctor(strict: bool, json_output: bool) -> None:
 def example_input() -> None:
     """Print an example input JSON to stdout."""
     click.echo(json.dumps(example_payload(), indent=2))
+
+
+SCHEMA_EPILOG = """\b
+Examples:
+  ablift schema analyze-input
+  ablift schema analyze-output
+  ablift schema duration-input
+  ablift schema duration-output
+  ablift schema --all
+  ablift schema analyze-input --output analyze-input.schema.json
+"""
+
+
+@cli.command(epilog=SCHEMA_EPILOG)
+@click.argument("target", required=False, type=click.Choice(list(SCHEMA_NAMES)))
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    help="Emit all input and output JSON Schemas in a single object.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    required=False,
+    type=click.Path(),
+    help="Path to write JSON Schema output. If omitted, writes to stdout.",
+)
+def schema(target: str | None, show_all: bool, output_path: str | None) -> None:
+    """Print JSON Schema (Draft 2020-12) for ablift input and output contracts."""
+    if show_all and target is not None:
+        raise click.UsageError("Specify either a schema target or --all, not both.")
+    if not show_all and target is None:
+        names = ", ".join(SCHEMA_NAMES)
+        raise click.UsageError(f"Specify a schema target ({names}) or pass --all.")
+
+    payload = get_all_schemas() if show_all else get_schema(target or "")
+    rendered = json.dumps(payload, indent=2)
+    if output_path:
+        _write_text(output_path, rendered + "\n")
+    else:
+        click.echo(rendered)
 
 
 if __name__ == "__main__":
