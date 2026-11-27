@@ -925,16 +925,40 @@ def build_power_output_schema() -> dict[str, Any]:
             "power": {"type": "number", "minimum": 0, "maximum": 1},
             "relative_mde": {"type": "number", "exclusiveMinimum": 0},
             "absolute_mde": {"type": "number", "minimum": 0},
-            "n_per_variant": {"type": "integer", "minimum": 2},
+            "n_per_variant": {
+                "type": "integer",
+                "minimum": 2,
+                "description": (
+                    "Control arm sample size (equal to every arm under an equal split)."
+                ),
+            },
+            "n_by_variant": {
+                "type": "array",
+                "minItems": 2,
+                "items": {"type": "integer", "minimum": 2},
+                "description": "Sample size for each variant in variant order (control first).",
+            },
+            "n_total": {
+                "type": "integer",
+                "minimum": 4,
+                "description": "Total sample size across all variants (sum of n_by_variant).",
+            },
             "assumptions": {
                 "type": "object",
                 "properties": {
                     "metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+                    "n_per_variant": {"type": "integer", "minimum": 2},
+                    "n_total": {"type": "integer", "minimum": 4},
                     "n_variants": {"type": "integer", "minimum": 2},
+                    "expected_split": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+                    },
                     "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
                     "alpha_per_comparison": {"type": "number"},
                 },
-                "required": ["metric", "n_per_variant", "n_variants", "alpha"],
+                "required": ["metric", "n_per_variant", "n_total", "n_variants", "alpha"],
             },
         },
         "required": [
@@ -945,6 +969,8 @@ def build_power_output_schema() -> dict[str, Any]:
             "relative_mde",
             "absolute_mde",
             "n_per_variant",
+            "n_by_variant",
+            "n_total",
             "assumptions",
         ],
         "additionalProperties": False,

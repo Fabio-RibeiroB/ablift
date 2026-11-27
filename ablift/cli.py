@@ -1102,6 +1102,7 @@ POWER_EPILOG = """\b
 Examples:
   ablift power --baseline-rate 0.08 --n-per-variant 10000 --relative-mde 0.1
   ablift power --baseline-rate 0.08 --n-per-variant 10000
+  ablift power --baseline-rate 0.08 --n-total 20000 --expected-split 0.9,0.1 --relative-mde 0.1
   ablift power --metric arpu --baseline-mean 12.5 --baseline-sd 25 --n-per-variant 20000
   ablift power --method sequential --baseline-rate 0.04 --n-per-variant 50000 --relative-mde 0.1
 """
@@ -1121,7 +1122,27 @@ Examples:
     show_default=True,
     help="'fixed' is the classic single-look test; 'sequential' matches mSPRT analysis.",
 )
-@click.option("--n-per-variant", type=int, required=True, help="Users per variant.")
+@click.option(
+    "--n-per-variant",
+    type=int,
+    default=None,
+    help="Users per variant (equal split; mutually exclusive with --n-total).",
+)
+@click.option(
+    "--n-total",
+    type=int,
+    default=None,
+    help="Total users across all variants (required with --expected-split; mutually exclusive with --n-per-variant).",
+)
+@click.option(
+    "--expected-split",
+    type=str,
+    default=None,
+    help=(
+        "Expected traffic split weights in variant order (control first), as comma-separated "
+        "positive numbers (e.g. '0.9,0.1' or '80,10,10'). Use with --n-total."
+    ),
+)
 @click.option(
     "--relative-mde",
     type=float,
@@ -1157,7 +1178,9 @@ Examples:
 def power(
     metric: str,
     method: str,
-    n_per_variant: int,
+    n_per_variant: int | None,
+    n_total: int | None,
+    expected_split: str | None,
     relative_mde: float | None,
     target_power: float | None,
     baseline_rate: float | None,
@@ -1170,6 +1193,20 @@ def power(
     output_path: str | None,
 ) -> None:
     """Power for a given sample size, or the smallest lift it can detect."""
+    if (n_per_variant is None) == (n_total is None):
+        raise click.UsageError("Give either --n-per-variant or --n-total (not both).")
+    parsed_expected_split = (
+        _parse_positional_expected_split(expected_split) if expected_split is not None else None
+    )
+    if parsed_expected_split is not None:
+        if n_per_variant is not None:
+            raise click.UsageError("Use --n-total (not --n-per-variant) with --expected-split.")
+        if n_variants < 2:
+            raise click.UsageError("n_variants must be at least 2 (control plus one treatment).")
+        try:
+            _resolve_split(parsed_expected_split, n_variants)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
     if relative_mde is not None and target_power is not None:
         raise click.UsageError(
             "Give --relative-mde to get the power, or --power to get the detectable lift, not both."
@@ -1202,6 +1239,8 @@ def power(
             metric=metric,
             method=method,
             n_per_variant=n_per_variant,
+            n_total=n_total,
+            expected_split=parsed_expected_split,
             relative_mde=relative_mde,
             power=None if relative_mde is not None else (target_power or 0.8),
             baseline_rate=baseline_rate,

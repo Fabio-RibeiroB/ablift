@@ -62,7 +62,7 @@ arpu,sequential,12.5,25.0,0.05,50000,2,0.05,0.8
 
 ## Power and minimum detectable effect
 
-`ablift power` takes a fixed sample size per variant and solves for whichever quantity you leave out:
+`ablift power` takes a fixed sample size (`--n-per-variant` for an equal split, or `--n-total` with optional `--expected-split`) and solves for whichever quantity you leave out:
 
 - give `--relative-mde` to get the **power**: the chance the test detects a lift of that size;
 - leave it out to get the **minimum detectable effect (MDE)**: the smallest relative lift detectable at `--power` (default `0.8`).
@@ -74,6 +74,10 @@ ablift power --baseline-rate 0.08 --n-per-variant 10000 --relative-mde 0.1
 # What is the smallest lift 10,000 users per variant can detect with 80% power?
 ablift power --baseline-rate 0.08 --n-per-variant 10000
 
+# Unequal traffic split: pass total users with --n-total and --expected-split (control first)
+ablift power --baseline-rate 0.08 --n-total 20000 --expected-split 0.9,0.1 --relative-mde 0.1
+ablift power --baseline-rate 0.08 --n-total 100000 --n-variants 3 --expected-split 80,10,10
+
 # ARPU, 90% power
 ablift power --metric arpu --baseline-mean 12.5 --baseline-sd 25 --n-per-variant 20000 --power 0.9
 
@@ -83,5 +87,6 @@ ablift power --method sequential --baseline-rate 0.04 --n-per-variant 50000 --re
 
 - `--method fixed` (the default) is the classic single-look two-sided z-test, so results match standard power calculators and statsmodels' `NormalIndPower`. `--method sequential` uses the mSPRT, which needs a larger effect for the same power but lets you look as often as you like.
 - `--n-variants` applies the same Bonferroni correction as `analyze` and `duration`.
-- The formulas are shared with `duration`: feeding `duration`'s sample size back into `power` returns the planned power and MDE.
-- Output (`ablift schema power-output`) reports `solved_for` (`power` or `relative_mde`), `power`, `relative_mde`, `absolute_mde`, `n_per_variant` and the `assumptions` used.
+- For unequal splits, pass `--n-total` together with `--expected-split` (comma-separated positive weights in variant order, control first; `--n-per-variant` and `--n-total` are mutually exclusive). Power and MDE are evaluated for the worst-case treatment arm so every treatment meets the reported guarantee.
+- The formulas are shared with `duration`: feeding `duration`'s `n_per_variant` (for equal splits) or `n_total` with the same `--expected-split` back into `power` returns the planned power and MDE.
+- Output (`ablift schema power-output`) reports `solved_for` (`power` or `relative_mde`), `power`, `relative_mde`, `absolute_mde`, `n_per_variant` (control arm size), `n_by_variant`, `n_total`, and the `assumptions` used.

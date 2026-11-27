@@ -3,18 +3,20 @@
 ``ablift duration`` answers "how many users do I need?". This module answers the other two
 questions with the same formulas, so the three always agree:
 
-- given ``n_per_variant`` and ``relative_mde`` -> the power of the test;
-- given ``n_per_variant`` and a target ``power`` -> the smallest detectable relative lift.
+- given a sample size (``n_per_variant`` or ``n_total`` with ``expected_split``) and
+  ``relative_mde`` -> the power of the test (worst-case treatment arm);
+- given a sample size and a target ``power`` -> the smallest detectable relative lift.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from statistics import NormalDist
 from typing import Any
 
-from .planning import _arpu_effect, _effect, _msprt_power_for_variance, _z
+from .planning import _arpu_effect, _effect, _msprt_power_for_variance, _resolve_split, _z
 
 _ND = NormalDist()
 
@@ -27,28 +29,41 @@ class PowerResult:
     relative_mde: float
     absolute_mde: float
     n_per_variant: int
+    n_by_variant: list[int]
+    n_total: int
     assumptions: dict[str, Any]
 
 
-def _fixed_power_conversion(n: int, p1: float, p2: float, alpha_adj: float) -> float:
+def _apportion_n(n_total: int, proportions: Sequence[float]) -> list[int]:
+    """Allocate ``n_total`` across variants using largest-remainder apportionment."""
+    exact = [n_total * p for p in proportions]
+    floors = [math.floor(x) for x in exact]
+    remainder = n_total - sum(floors)
+    order = sorted(range(len(proportions)), key=lambda i: (exact[i] - floors[i], -i), reverse=True)
+    for i in order[:remainder]:
+        floors[i] += 1
+    return floors
+
+
+def _fixed_power_conversion(n_c: int, n_t: int, p1: float, p2: float, alpha_adj: float) -> float:
     """Power of the two-sided two-proportion z-test (both rejection tails)."""
-    p_bar = 0.5 * (p1 + p2)
-    null_term = _z(1 - alpha_adj / 2) * math.sqrt(2 * p_bar * (1 - p_bar))
-    shift = abs(p2 - p1) * math.sqrt(n)
-    spread = math.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
-    return _ND.cdf((shift - null_term) / spread) + _ND.cdf((-shift - null_term) / spread)
+    p_bar = (n_c * p1 + n_t * p2) / (n_c + n_t)
+    se0 = math.sqrt(p_bar * (1 - p_bar) * (1.0 / n_c + 1.0 / n_t))
+    se1 = math.sqrt(p1 * (1 - p1) / n_c + p2 * (1 - p2) / n_t)
+    crit = _z(1 - alpha_adj / 2) * se0
+    delta = abs(p2 - p1)
+    return _ND.cdf((delta - crit) / se1) + _ND.cdf((-delta - crit) / se1)
 
 
-def _fixed_power_means(n: int, delta: float, sd: float, alpha_adj: float) -> float:
+def _fixed_power_means(n_c: int, n_t: int, delta: float, sd: float, alpha_adj: float) -> float:
     """Power of the two-sided two-sample z-test for means with equal arm variances."""
-    shift = abs(delta) * math.sqrt(n / (2.0 * sd * sd))
+    se = sd * math.sqrt(1.0 / n_c + 1.0 / n_t)
+    shift = abs(delta) / se
     z_alpha = _z(1 - alpha_adj / 2)
     return _ND.cdf(shift - z_alpha) + _ND.cdf(-shift - z_alpha)
 
 
-def _validate(n_per_variant: int, n_variants: int, alpha: float, power: float | None) -> None:
-    if isinstance(n_per_variant, bool) or n_per_variant < 2:
-        raise ValueError("n_per_variant must be at least 2.")
+def _validate_common_power(n_variants: int, alpha: float, power: float | None) -> None:
     if n_variants < 2:
         raise ValueError("n_variants must be at least 2 (control plus one treatment).")
     if not 0 < alpha < 1:
@@ -57,11 +72,43 @@ def _validate(n_per_variant: int, n_variants: int, alpha: float, power: float | 
         raise ValueError("power must be in (0, 1).")
 
 
+def _resolve_arm_sizes(
+    n_per_variant: int | None,
+    n_total: int | None,
+    n_variants: int,
+    proportions: list[float] | None,
+) -> tuple[int, list[int], int]:
+    if (n_per_variant is None) == (n_total is None):
+        raise ValueError("Give exactly one of n_per_variant or n_total.")
+    if proportions is not None and n_per_variant is not None:
+        raise ValueError("Use n_total (not n_per_variant) with expected_split.")
+
+    if n_per_variant is not None:
+        if isinstance(n_per_variant, bool) or n_per_variant < 2:
+            raise ValueError("n_per_variant must be at least 2.")
+        n_by_variant = [n_per_variant] * n_variants
+        return n_per_variant, n_by_variant, n_per_variant * n_variants
+
+    assert n_total is not None
+    min_total = 2 * n_variants
+    if isinstance(n_total, bool) or n_total < min_total:
+        raise ValueError(f"n_total must be at least {min_total} (at least 2 users per variant).")
+    weights = proportions if proportions is not None else [1.0 / n_variants] * n_variants
+    n_by_variant = _apportion_n(n_total, weights)
+    if any(n < 2 for n in n_by_variant):
+        raise ValueError(
+            f"Every variant must receive at least 2 users; got {n_by_variant} for n_total={n_total}."
+        )
+    return n_by_variant[0], n_by_variant, n_total
+
+
 def power_analysis(
     *,
     metric: str,
     method: str,
-    n_per_variant: int,
+    n_per_variant: int | None = None,
+    n_total: int | None = None,
+    expected_split: Sequence[float] | None = None,
     relative_mde: float | None = None,
     power: float | None = None,
     baseline_rate: float | None = None,
@@ -79,7 +126,13 @@ def power_analysis(
         raise ValueError("method must be 'fixed' or 'sequential'.")
     if metric not in {"conversion_rate", "arpu"}:
         raise ValueError("metric must be 'conversion_rate' or 'arpu'.")
-    _validate(n_per_variant, n_variants, alpha, power)
+    _validate_common_power(n_variants, alpha, power)
+    proportions = _resolve_split(expected_split, n_variants)
+    resolved_n_per_variant, n_by_variant, resolved_n_total = _resolve_arm_sizes(
+        n_per_variant, n_total, n_variants, proportions
+    )
+    n_c = n_by_variant[0]
+    treatment_ns = n_by_variant[1:]
     alpha_adj = alpha / (n_variants - 1)
 
     if metric == "conversion_rate":
@@ -91,9 +144,17 @@ def power_analysis(
         def effect(mde: float) -> tuple[float, float]:
             p1, p2, delta = _effect(baseline_rate, mde)
             if method == "fixed":
-                return _fixed_power_conversion(n_per_variant, p1, p2, alpha_adj), delta
-            v = (p1 * (1 - p1) + p2 * (1 - p2)) / n_per_variant
-            return _msprt_power_for_variance(v, p2 - p1, tau, alpha_adj), delta
+                achieved = min(
+                    _fixed_power_conversion(n_c, n_t, p1, p2, alpha_adj) for n_t in treatment_ns
+                )
+                return achieved, delta
+            v_c = p1 * (1 - p1)
+            v_t = p2 * (1 - p2)
+            achieved = min(
+                _msprt_power_for_variance(v_c / n_c + v_t / n_t, p2 - p1, tau, alpha_adj)
+                for n_t in treatment_ns
+            )
+            return achieved, delta
 
         # A lift cannot push the treatment rate to 100%.
         max_mde = (1 - 1e-6) / baseline_rate - 1
@@ -106,9 +167,16 @@ def power_analysis(
         def effect(mde: float) -> tuple[float, float]:
             _, _, delta, sd = _arpu_effect(baseline_mean, mde, baseline_sd, baseline_cv)
             if method == "fixed":
-                return _fixed_power_means(n_per_variant, delta, sd, alpha_adj), delta
-            v = 2.0 * sd * sd / n_per_variant
-            return _msprt_power_for_variance(v, delta, tau, alpha_adj), delta
+                achieved = min(
+                    _fixed_power_means(n_c, n_t, delta, sd, alpha_adj) for n_t in treatment_ns
+                )
+                return achieved, delta
+            var = sd * sd
+            achieved = min(
+                _msprt_power_for_variance(var * (1.0 / n_c + 1.0 / n_t), delta, tau, alpha_adj)
+                for n_t in treatment_ns
+            )
+            return achieved, delta
 
         max_mde = 1e6
 
@@ -121,9 +189,14 @@ def power_analysis(
     else:
         assert power is not None
         if effect(max_mde)[0] < power:
+            size_desc = (
+                f"{resolved_n_per_variant:,} users per variant"
+                if n_per_variant is not None
+                else f"{resolved_n_total:,} total users ({n_by_variant})"
+            )
             raise ValueError(
                 f"No lift up to {max_mde:+.0%} reaches power {power:.0%} with "
-                f"{n_per_variant:,} users per variant; increase the sample size."
+                f"{size_desc}; increase the sample size."
             )
         lo, hi = 0.0, max_mde
         for _ in range(200):  # power rises with the lift; bisect to float precision
@@ -140,11 +213,14 @@ def power_analysis(
 
     assumptions: dict[str, Any] = {
         "metric": metric,
-        "n_per_variant": n_per_variant,
+        "n_per_variant": resolved_n_per_variant,
+        "n_total": resolved_n_total,
         "n_variants": n_variants,
         "alpha": alpha,
         "alpha_per_comparison": alpha_adj,
     }
+    if proportions is not None:
+        assumptions["expected_split"] = proportions
     if metric == "conversion_rate":
         assumptions["baseline_rate"] = baseline
     else:
@@ -161,6 +237,8 @@ def power_analysis(
         power=float(target),
         relative_mde=float(mde),
         absolute_mde=float(delta),
-        n_per_variant=n_per_variant,
+        n_per_variant=resolved_n_per_variant,
+        n_by_variant=n_by_variant,
+        n_total=resolved_n_total,
         assumptions=assumptions,
     )
