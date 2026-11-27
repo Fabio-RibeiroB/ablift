@@ -52,11 +52,14 @@ ablift --help
 ablift analyze --help
 ```
 
-Generate a JSON input template and analyze it:
+Generate a JSON input template and analyze it (or pipe directly over stdin with `--input -`):
 
 ```bash
 ablift example-input > input.json
 ablift analyze --input input.json --output output.json --report report.md
+
+# Or pipe directly without temporary files:
+ablift example-input | ablift analyze --input -
 ```
 
 Analyze a CSV (positional columns, see [CSV/XLSX input](#csvxlsx-input)). The Bayesian method is the default; without a decision policy it reports estimates and leaves `recommendation` as `null`:
@@ -86,12 +89,12 @@ ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 -
 
 ## Command summary
 
-- `ablift analyze`: analyze `.json`, `.csv`, `.xlsx`, or `.xlsm` input
-- `ablift duration`: estimate runtime needed for a conversion-rate test
+- `ablift analyze`: analyze `.json`, `.csv`, `.xlsx`, `.xlsm`, or stdin (`--input -`)
+- `ablift duration`: estimate runtime needed for a conversion-rate test (flags, file, or `--input -`)
 - `ablift doctor`: verify the environment and required dependencies (`--json-output`, `--strict`)
 - `ablift example-input`: print a starter JSON payload
 
-Useful `analyze` flags: `--method {bayesian,sequential}`, `--primary-metric {conversion_rate,arpu}`, `--alpha`, `--sequential-tau`, `--samples`, `--random-seed`, `--enable-recommendation/--no-recommendation`, `--prob-threshold`, `--max-expected-loss`, `--experiment-name`, `--sheet`, `--output`, `--report`. Flags override values in the input file.
+Useful `analyze` flags: `--input-format {json,csv}`, `--method {bayesian,sequential}`, `--primary-metric {conversion_rate,arpu}`, `--alpha`, `--sequential-tau`, `--samples`, `--random-seed`, `--enable-recommendation/--no-recommendation`, `--prob-threshold`, `--max-expected-loss`, `--experiment-name`, `--sheet`, `--output`, `--report`. Flags override values in the input.
 
 ## Choosing the metric model
 
@@ -302,6 +305,28 @@ The JSON output records what was detected in `analysis_settings.input_interpreta
 
 `make demo` runs all of them end to end and writes outputs to `examples/out/` (git-ignored).
 
+## Stdin input
+
+Both `ablift analyze` and `ablift duration` accept `--input -` to read from stdin without creating temporary files:
+
+```bash
+# Analyze piped JSON (default format for analyze --input -)
+ablift example-input | ablift analyze --input -
+
+# Analyze piped CSV (pass --input-format csv)
+cat examples/conversion_multivariant.csv | ablift analyze --input - --input-format csv
+
+# Plan duration from piped JSON or CSV (auto-detected if --input-format is omitted)
+echo '{"baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
+cat examples/duration_inputs.csv | ablift duration --input - --input-format csv
+```
+
+Notes:
+- For `analyze --input -`, stdin defaults to JSON. Pass `--input-format csv` for piped CSV (aggregated or row-level); `experiment_name` defaults to `"stdin"` unless `--experiment-name` is passed.
+- For `duration --input -`, omitting `--input-format` auto-detects JSON when the trimmed input starts with `{`, and treats other input as CSV.
+- `--input-format {json,csv}` can also be used with file paths when the extension does not indicate the format.
+- `--sheet` is only valid for `.xlsx`/`.xlsm` files and is rejected with exit code 2 on stdin.
+
 ## Reusable project config
 
 Use `[tool.ablift]` in `pyproject.toml` (read from the current directory) when you want one decision policy and one set of inference settings reused across analyses in the project.
@@ -337,9 +362,11 @@ ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-
 # Bayesian assurance (simulation-based)
 ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.08 --daily-traffic 60000 --max-days 60
 
-# From a CSV/XLSX with named columns
+# From a CSV/XLSX/JSON file or stdin
 ablift duration --input examples/duration_inputs.csv
 ablift duration --input examples/duration_inputs.xlsx --sheet Sheet1
+echo '{"baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
+cat examples/duration_inputs.csv | ablift duration --input - --input-format csv
 ```
 
 Methods:
@@ -351,8 +378,8 @@ Both `sequential` and `fixed` apply a Bonferroni correction across `n_variants -
 
 Inputs:
 - `--baseline-rate`, `--relative-mde` and `--daily-traffic` are required, from flags or `--input`. The command never prompts; missing values are a usage error (exit code 2).
-- Optional: `--method`, `--n-variants` (default 2, including control), `--alpha` (0.05), `--power` (0.8), `--sequential-tau`, `--prob-threshold`, `--max-expected-loss`, `--assurance-target`, `--max-days`, `--output`.
-- `--input` takes a CSV/XLSX whose first row has **named** columns: `method`, `baseline_rate`, `relative_mde`, `daily_traffic`, `n_variants`, `alpha`, `power`, `sequential_tau`, `prob_threshold`, `max_expected_loss`, `assurance_target`, `max_days`. Unknown columns are an error. CLI flags override file values.
+- Optional: `--method`, `--n-variants` (default 2, including control), `--alpha` (0.05), `--power` (0.8), `--sequential-tau`, `--prob-threshold`, `--max-expected-loss`, `--assurance-target`, `--max-days`, `--input-format {json,csv}`, `--output`.
+- `--input` takes a CSV/XLSX/JSON file or `-` for stdin with **named** fields/columns: `method`, `baseline_rate`, `relative_mde`, `daily_traffic`, `n_variants`, `alpha`, `power`, `sequential_tau`, `prob_threshold`, `max_expected_loss`, `assurance_target`, `max_days`. Unknown columns or fields are an error. CLI flags override input values.
 - Settings the chosen method does not use are a usage error rather than being silently ignored: `--alpha`, `--power` and `--sequential-tau` do not apply to `bayesian`; `--prob-threshold`, `--max-expected-loss`, `--assurance-target` and `--max-days` apply only to `bayesian`; `--sequential-tau` applies only to `sequential`.
 - Duration planning is conversion-rate only.
 
@@ -373,12 +400,12 @@ sequential,0.04,0.05,50000,3,0.05,0.8
 
 ## Agent playbook
 
-1. Run `ablift analyze --input ...` with a JSON, CSV, or XLSX file.
-2. For CSV/XLSX, format data with positional columns (see CSV/XLSX input).
+1. Run `ablift analyze --input ...` with a JSON, CSV, or XLSX file, or `--input -` to pipe JSON/CSV over stdin without temporary files.
+2. For CSV/XLSX (or piped CSV with `--input-format csv`), format data with positional columns (see CSV/XLSX input).
 3. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
 4. If `action=continue_collecting_data`, re-run on the cumulative data later. With `--method sequential` this is always safe, however often you look.
 5. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
-6. For planning questions, run `ablift duration`.
+6. For planning questions, run `ablift duration` (flags, file, or `--input -`).
 
 Exit codes:
 - `0`: success

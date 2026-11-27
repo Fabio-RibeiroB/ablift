@@ -194,6 +194,72 @@ class ConnectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_looks"):
             build_duration_request_from_rows([{"baseline_rate": "0.04", "max_looks": "10"}])
 
+    def test_read_csv_text_handles_bom_and_blank_rows(self):
+        from ablift.connectors import read_csv_text
+
+        text = "\ufeffvariant,visitors,conversions\ncontrol,1000,40\n,,\nv1,1000,45\n"
+        rows = read_csv_text(text)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["variant"], "control")
+        self.assertEqual(rows[1]["conversions"], "45")
+
+    def test_read_csv_text_converts_csv_error_to_value_error(self):
+        import csv
+
+        from ablift.connectors import read_csv_text
+
+        previous = csv.field_size_limit(4)
+        try:
+            with self.assertRaisesRegex(ValueError, "Malformed CSV"):
+                read_csv_text("variant,visitors,conversions\ncontrol,1000,40\n")
+        finally:
+            csv.field_size_limit(previous)
+
+    def test_build_duration_request_from_dict(self):
+        from ablift.connectors import build_duration_request_from_dict
+
+        req = build_duration_request_from_dict(
+            {
+                "method": "Bayesian",
+                "baseline_rate": 0.04,
+                "relative_mde": 0.05,
+                "daily_traffic": 50000,
+                "n_variants": 3,
+                "max_days": 30,
+                "alpha": None,
+            }
+        )
+        self.assertEqual(req["method"], "bayesian")
+        self.assertEqual(req["baseline_rate"], 0.04)
+        self.assertEqual(req["daily_traffic"], 50000)
+        self.assertIsInstance(req["daily_traffic"], int)
+        self.assertEqual(req["n_variants"], 3)
+        self.assertEqual(req["max_days"], 30)
+        self.assertNotIn("alpha", req)
+
+    def test_build_duration_request_from_dict_rejects_unknown_and_invalid_types(self):
+        from ablift.connectors import build_duration_request_from_dict
+
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+            build_duration_request_from_dict([{"baseline_rate": 0.04}])
+
+        with self.assertRaisesRegex(ValueError, "bogus"):
+            build_duration_request_from_dict({"baseline_rate": 0.04, "bogus": 1})
+
+        for bad in (
+            {"baseline_rate": True},
+            {"daily_traffic": False},
+            {"daily_traffic": 100.5},
+            {"baseline_rate": [0.04]},
+            {"baseline_rate": "not_a_number"},
+            {"baseline_rate": float("nan")},
+            {"baseline_rate": float("inf")},
+            {"method": 123},
+            {"method": True},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                build_duration_request_from_dict(bad)
+
 
 if __name__ == "__main__":
     unittest.main()
