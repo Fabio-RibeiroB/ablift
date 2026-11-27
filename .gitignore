@@ -17,3 +17,4 @@ examples/out/
 .coverage
 .coverage.*
 htmlcov/
+.claude/worktrees/
