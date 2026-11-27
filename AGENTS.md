@@ -27,7 +27,7 @@ make docs                 # re-render docs/demo.svg from real CLI output
 - All code must pass `make lint` (ruff check, ruff format, ty) and `make test` before it is committed. The git hooks enforce this (`uv run pre-commit install --hook-type pre-commit --hook-type pre-push`, which also covers worktrees), CI checks every PR, and `main` only accepts PRs whose checks pass. Never skip hooks with `--no-verify`.
 - CLI uses Click; entry point is `ablift/cli.py`.
 - Read `[tool.ablift]` from `pyproject.toml` for default config.
-- Never edit `CHANGELOG.md` in a feature PR. Add a fragment `changes/<issue>.<type>.md` (`added`, `changed`, `fixed`, `removed`, `docs`); CI requires one when `ablift/` changes. See `changes/README.md`.
+- Never edit `CHANGELOG.md` in a feature PR. Add a fragment `changes/<issue>.<type>.md` (`added`, `changed`, `fixed`, `removed`, `docs`); CI requires one when `ablift/` changes. Check locally with `make changelog-check` (also a pre-push hook). Internal-only changes: `no-changelog` PR label, or `SKIP_CHANGELOG=1` locally. See `changes/README.md`.
 
 <important if="you change CLI commands, options, output, examples, or the package version">
 Update README.md / docs/ in the same change. `tests/test_docs.py` (also a pre-commit hook) fails on undocumented options, documented commands that no longer run, broken links, a stale install line, or a stale `docs/demo.svg` (fix with `make docs`).
