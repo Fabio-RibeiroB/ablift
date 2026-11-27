@@ -3,13 +3,13 @@
 [![PyPI](https://img.shields.io/pypi/v/ablift?include_prereleases&label=PyPI)](https://pypi.org/project/ablift/)
 [![CI](https://github.com/Fabio-RibeiroB/ablift/actions/workflows/ci.yml/badge.svg)](https://github.com/Fabio-RibeiroB/ablift/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/pypi/pyversions/ablift)](https://pypi.org/project/ablift/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/Fabio-RibeiroB/ablift/blob/main/LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
 **Turn A/B test numbers into a ship / don't-ship decision from the command line, with JSON output an AI agent can act on.**
 
-![ablift analyzing a three-variant checkout test and recommending ship_new_checkout](docs/demo.svg)
+![ablift analyzing a three-variant checkout test and recommending ship_new_checkout](https://raw.githubusercontent.com/Fabio-RibeiroB/ablift/main/docs/demo.svg)
 
 > **Alpha.** The statistics are tested against reference implementations, but the CLI and output format may still change before 1.0.
 
@@ -81,11 +81,11 @@ Run `ablift <command> --help` for every option.
 
 ## Documentation
 
-- [Inputs](docs/inputs.md): choosing a metric, the JSON contract, CSV/XLSX layouts, stdin and `pyproject.toml` defaults
-- [Statistical methods](docs/methods.md): what each method computes and how multiple variants are handled
-- [Duration and power](docs/duration.md): sample size, runtime, power and minimum detectable effect
-- [Agents and automation](docs/agents.md): schemas, a step-by-step playbook, exit codes and every output field
-- [Changelog](CHANGELOG.md)
+- [Inputs](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/inputs.md): choosing a metric, the JSON contract, CSV/XLSX layouts, stdin and `pyproject.toml` defaults
+- [Statistical methods](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/methods.md): what each method computes and how multiple variants are handled
+- [Duration and power](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/duration.md): sample size, runtime, power and minimum detectable effect
+- [Agents and automation](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/agents.md): schemas, a step-by-step playbook, exit codes and every output field
+- [Changelog](https://github.com/Fabio-RibeiroB/ablift/blob/main/CHANGELOG.md)
 
 ## Limitations
 
@@ -103,8 +103,8 @@ make demo                # run every bundled example into examples/out/
 make docs                # re-render docs/demo.svg after changing CLI output
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how changes are checked and released.
+See [CONTRIBUTING.md](https://github.com/Fabio-RibeiroB/ablift/blob/main/CONTRIBUTING.md) for how changes are checked and released.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/Fabio-RibeiroB/ablift/blob/main/LICENSE).
