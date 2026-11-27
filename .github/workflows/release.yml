@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag like v0.5.1 to build, smoke-test and publish to PyPI.
+# Push a tag like v0.5.0 to build, smoke-test and publish to PyPI.
 # PyPI publishing uses trusted publishing (OIDC): no API token is stored in the repo.
 # One-time setup on pypi.org: add a trusted publisher for this repository with
 # workflow "release.yml" and environment "pypi".
@@ -88,7 +88,7 @@ jobs:
             found {print}
           ' CHANGELOG.md > notes.md
           flags=()
-          # PEP 440 pre-releases (e.g. 0.5.1a1, 0.6.0rc2, 0.6.0.dev1) are marked as such on GitHub.
+          # PEP 440 pre-releases (e.g. 0.5.0a1, 1.0.0rc1, 0.6.0.dev1) are marked as such on GitHub.
           if [[ "$version" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
             flags+=(--prerelease)
             if ! grep -q '[^[:space:]]' notes.md; then
