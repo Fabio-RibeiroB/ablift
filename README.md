@@ -98,6 +98,7 @@ ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 -
 
 - `ablift analyze`: analyze `.json`, `.csv`, `.xlsx`, `.xlsm`, or stdin (`--input -`)
 - `ablift duration`: estimate runtime needed for a conversion-rate or ARPU test (flags, file, or `--input -`)
+- `ablift schema`: emit JSON Schema (Draft 2020-12) for `analyze-input`, `analyze-output`, `duration-input`, `duration-output`, or `--all`
 - `ablift doctor`: verify the environment and required dependencies (`--json-output`, `--strict`)
 - `ablift example-input`: print a starter JSON payload
 
@@ -461,14 +462,28 @@ arpu,sequential,12.5,25.0,0.05,50000,2,0.05,0.8
 - **Multiple variants:** in both sequential and fixed-horizon modes, alpha is Bonferroni-corrected: `alpha_per_comparison = alpha / number_of_treatments` (with `e_threshold = 1 / alpha_per_comparison` for sequential, and `p_value = min(1, raw_p_value * number_of_treatments)` plus simultaneous Bonferroni-adjusted CIs for fixed-horizon). Bayesian mode applies no alpha correction and reports joint multi-arm probabilities (`probability_best`, summing to `1.0` across control and all treatments) and `multi_arm_expected_loss = E[max_j(theta_j) - theta_i]`. Both are reported in `analysis_settings.multiple_comparisons`.
 - **SRM:** chi-square goodness-of-fit of the visitor counts against the configured expected traffic proportions (defaults to an equal `1/k` split; configurable via `expected_split`, per-variant `expected_share`, or `--expected-split`). Failure when `p < 0.001`.
 
+## Schema introspection
+
+Agents and CI pipelines can discover all supported input fields, enums, constraints, and output contracts directly as JSON Schema (Draft 2020-12) without scraping documentation:
+
+```bash
+ablift schema analyze-input
+ablift schema analyze-output
+ablift schema duration-input
+ablift schema duration-output
+ablift schema --all
+ablift schema analyze-output --output analyze-output.schema.json
+```
+
 ## Agent playbook
 
-1. Run `ablift analyze --input ...` with a JSON, CSV, or XLSX file, or `--input -` to pipe JSON/CSV over stdin without temporary files.
-2. For CSV/XLSX (or piped CSV with `--input-format csv`), format data with positional columns (see CSV/XLSX input).
-3. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
-4. If `action=continue_collecting_data`, re-run on the cumulative data later. With `--method sequential` this is always safe, however often you look.
-5. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
-6. For planning questions, run `ablift duration` (flags, file, or `--input -`).
+1. Inspect contracts programmatically with `ablift schema --all` (or `ablift schema analyze-input` / `analyze-output` / `duration-input` / `duration-output`).
+2. Run `ablift analyze --input ...` with a JSON, CSV, or XLSX file, or `--input -` to pipe JSON/CSV over stdin without temporary files.
+3. For CSV/XLSX (or piped CSV with `--input-format csv`), format data with positional columns (see CSV/XLSX input).
+4. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
+5. If `action=continue_collecting_data`, re-run on the cumulative data later. With `--method sequential` this is always safe, however often you look.
+6. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
+7. For planning questions, run `ablift duration` (flags, file, or `--input -`).
 
 Exit codes:
 - `0`: success
