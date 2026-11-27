@@ -44,7 +44,7 @@ def _resolve_split(expected_split: Sequence[float] | None, n_variants: int) -> l
                 f"expected_split[{idx}] must be a finite positive number, got {raw!r}."
             )
         weights.append(val)
-    total = math.fsum(weights)
+    total = sum(weights)
     if not math.isfinite(total) or total <= 0:
         raise ValueError("expected_split weights sum must be finite and positive.")
     proportions = [w / total for w in weights]
