@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/Fabio-RibeiroB/ablift/main/docs/logo.svg" alt="ablift logo" width="80" align="right">
+
 # ablift
 
 [![PyPI](https://img.shields.io/pypi/v/ablift?include_prereleases&label=PyPI)](https://pypi.org/project/ablift/)
