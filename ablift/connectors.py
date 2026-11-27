@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 import csv
+import io
+import math
 import re
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+
+
+def read_csv_text(text: str) -> list[dict[str, Any]]:
+    # Strip a leading UTF-8 BOM if present (e.g. Excel "CSV UTF-8" piped via stdin).
+    cleaned = text.lstrip("\ufeff")
+    try:
+        return [
+            row
+            for row in csv.DictReader(io.StringIO(cleaned, newline=""))
+            if not _is_blank_row(row)
+        ]
+    except csv.Error as exc:
+        raise ValueError(f"Malformed CSV input: {exc}") from exc
 
 
 def read_table(path: str, sheet: str | None = None) -> list[dict[str, Any]]:
@@ -15,7 +30,10 @@ def read_table(path: str, sheet: str | None = None) -> list[dict[str, Any]]:
     if suffix == ".csv":
         # utf-8-sig strips the byte-order mark Excel adds when saving "CSV UTF-8".
         with p.open("r", encoding="utf-8-sig", newline="") as f:
-            return [row for row in csv.DictReader(f) if not _is_blank_row(row)]
+            try:
+                return [row for row in csv.DictReader(f) if not _is_blank_row(row)]
+            except csv.Error as exc:
+                raise ValueError(f"Malformed CSV input: {exc}") from exc
 
     if suffix in {".xlsx", ".xlsm"}:
         wb = load_workbook(filename=path, read_only=True, data_only=True)
@@ -51,6 +69,8 @@ def _is_blank_row(row: dict[str, Any]) -> bool:
 def _to_int(value: Any, field_name: str) -> int:
     if value is None or value == "":
         raise ValueError(f"Missing required integer field '{field_name}'.")
+    if isinstance(value, bool):
+        raise ValueError(f"Column '{field_name}' must be numeric, got {value!r}.")
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -315,8 +335,9 @@ def _build_payload_from_aggregated(
         conversions_col = metric_cols[0]
         revenue_cols = (metric_cols[1], metric_cols[2])
     else:
+        col_list = ", ".join(str(c) for c in metric_cols)
         raise ValueError(
-            f"Could not interpret {len(metric_cols)} metric columns ({', '.join(metric_cols)}).\n"
+            f"Could not interpret {len(metric_cols)} metric columns ({col_list}).\n"
             + AGGREGATED_LAYOUT_HELP
         )
 
@@ -426,18 +447,22 @@ _DURATION_FIELDS: dict[str, type] = {
 }
 
 
-def build_duration_request_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Read duration assumptions from the first row of a table with named columns.
-
-    Only columns that are present and non-empty are returned; callers supply defaults.
-    """
-    if not rows:
-        raise ValueError("Duration input table is empty.")
-    row = {str(k).strip().lower(): v for k, v in rows[0].items() if k is not None}
-    unknown = sorted(k for k in row if k and k not in _DURATION_FIELDS)
+def _parse_duration_mapping(
+    raw: dict[Any, Any],
+    *,
+    ignore_empty_keys: bool,
+    key_label: str,
+) -> dict[str, Any]:
+    row = {
+        str(k).strip().lower(): v
+        for k, v in raw.items()
+        if k is not None and (not ignore_empty_keys or str(k).strip() != "")
+    }
+    unknown = sorted(k for k in row if k not in _DURATION_FIELDS)
     if unknown:
+        formatted = ", ".join(repr(k) if not k else k for k in unknown)
         raise ValueError(
-            f"Unknown duration column(s): {', '.join(unknown)}. "
+            f"Unknown duration {key_label}(s): {formatted}. "
             f"Expected any of: {', '.join(_DURATION_FIELDS)}."
         )
     out: dict[str, Any] = {}
@@ -446,9 +471,39 @@ def build_duration_request_from_rows(rows: list[dict[str, Any]]) -> dict[str, An
         if value is None or value == "":
             continue
         if kind is str:
-            out[key] = str(value).strip().lower()
+            if not isinstance(value, str):
+                raise ValueError(f"Field '{key}' must be a string, got {value!r}.")
+            stripped = value.strip().lower()
+            if not stripped:
+                continue
+            out[key] = stripped
         elif kind is int:
             out[key] = _to_int(value, key)
         else:
-            out[key] = float(value)
+            if isinstance(value, bool):
+                raise ValueError(f"Field '{key}' must be numeric, got {value!r}.")
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"Field '{key}' must be numeric, got {value!r}.") from None
+            if not math.isfinite(number):
+                raise ValueError(f"Field '{key}' must be a finite number, got {value!r}.")
+            out[key] = number
     return out
+
+
+def build_duration_request_from_dict(data: Any) -> dict[str, Any]:
+    """Read duration assumptions from a JSON object with named fields."""
+    if not isinstance(data, dict):
+        raise ValueError("Duration JSON input must be a JSON object.")
+    return _parse_duration_mapping(data, ignore_empty_keys=False, key_label="field")
+
+
+def build_duration_request_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read duration assumptions from the first row of a table with named columns.
+
+    Only columns that are present and non-empty are returned; callers supply defaults.
+    """
+    if not rows:
+        raise ValueError("Duration input table is empty.")
+    return _parse_duration_mapping(rows[0], ignore_empty_keys=True, key_label="column")

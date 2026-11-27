@@ -9,7 +9,13 @@ from typing import Any
 
 import click
 
-from .connectors import build_duration_request_from_rows, build_payload_from_rows, read_table
+from .connectors import (
+    build_duration_request_from_dict,
+    build_duration_request_from_rows,
+    build_payload_from_rows,
+    read_csv_text,
+    read_table,
+)
 from .engine import analyze as run_analysis
 from .engine import parse_payload
 from .models import SCHEMA_VERSION
@@ -27,6 +33,8 @@ Examples:
   ablift analyze --input experiment.xlsx --sheet Results
   ablift analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
   ablift analyze --input experiment.json --report report.md
+  ablift example-input | ablift analyze --input -
+  cat experiment.csv | ablift analyze --input - --input-format csv
 """
 
 
@@ -64,28 +72,99 @@ def _load_project_config() -> dict[str, Any]:
     return data.get("tool", {}).get("ablift", {})
 
 
+def _read_stdin() -> str:
+    raw = click.get_text_stream("stdin").read().lstrip("\ufeff")
+    if not raw.strip():
+        raise ValueError("Stdin input is empty.")
+    return raw
+
+
+def _validate_sheet_option(
+    input_path: str | None, input_format: str | None, sheet: str | None
+) -> None:
+    if sheet is None:
+        return
+    if input_path is None:
+        raise click.UsageError("--sheet requires --input with an .xlsx/.xlsm file.")
+    if input_path == "-":
+        raise click.UsageError("--sheet cannot be used when reading from stdin.")
+    if input_format is not None or Path(input_path).suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise click.UsageError("--sheet is only supported for .xlsx/.xlsm input.")
+
+
+def _merge_json_payload(
+    input_payload: Any,
+    config_payload: dict[str, Any],
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(input_payload, dict):
+        raise ValueError("JSON input must be an object with a 'variants' list.")
+    payload = _deep_merge(config_payload, _deep_merge(input_payload, defaults))
+    payload.setdefault("input_interpretation", {"source_type": "json"})
+    return payload
+
+
 def _load_analysis_payload(
     *,
     input_path: str,
+    input_format: str | None,
     sheet: str | None,
     defaults: dict[str, Any],
 ) -> dict[str, Any]:
     config_payload = _load_project_config()
-    suffix = Path(input_path).suffix.lower()
-    if suffix == ".json":
-        input_payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
-        if not isinstance(input_payload, dict):
-            raise ValueError("JSON input must be an object with a 'variants' list.")
-        payload = _deep_merge(config_payload, _deep_merge(input_payload, defaults))
-        payload.setdefault("input_interpretation", {"source_type": "json"})
+    if input_path == "-":
+        raw = _read_stdin()
+        fmt = input_format or "json"
+        if fmt == "json":
+            return _merge_json_payload(json.loads(raw), config_payload, defaults)
+        rows = read_csv_text(raw)
+        payload = build_payload_from_rows(rows, defaults=_deep_merge(config_payload, defaults))
+        if payload.get("experiment_name") in {None, "", "table_input_experiment"}:
+            payload["experiment_name"] = "stdin"
         return payload
 
-    if suffix not in {".csv", ".xlsx", ".xlsm"}:
+    suffix = Path(input_path).suffix.lower()
+    if input_format == "json" or (input_format is None and suffix == ".json"):
+        raw = Path(input_path).read_text(encoding="utf-8-sig")
+        return _merge_json_payload(json.loads(raw), config_payload, defaults)
+
+    if input_format == "csv":
+        rows = read_csv_text(Path(input_path).read_text(encoding="utf-8-sig"))
+    elif suffix in {".csv", ".xlsx", ".xlsm"}:
+        rows = read_table(input_path, sheet=sheet)
+    else:
         raise click.ClickException("Unsupported analysis input. Use .json, .csv, .xlsx, or .xlsm.")
 
-    rows = read_table(input_path, sheet=sheet)
-    table_defaults = _deep_merge(config_payload, defaults)
-    return build_payload_from_rows(rows, defaults=table_defaults)
+    payload = build_payload_from_rows(rows, defaults=_deep_merge(config_payload, defaults))
+    if payload.get("experiment_name") in {None, "", "table_input_experiment"}:
+        payload["experiment_name"] = Path(input_path).stem
+    return payload
+
+
+def _load_duration_request(
+    *,
+    input_path: str,
+    input_format: str | None,
+    sheet: str | None,
+) -> dict[str, Any]:
+    if input_path == "-":
+        raw = _read_stdin()
+        fmt = input_format or ("json" if raw.lstrip().startswith("{") else "csv")
+        if fmt == "json":
+            return build_duration_request_from_dict(json.loads(raw))
+        return build_duration_request_from_rows(read_csv_text(raw))
+
+    suffix = Path(input_path).suffix.lower()
+    if input_format == "json" or (input_format is None and suffix == ".json"):
+        raw = Path(input_path).read_text(encoding="utf-8-sig")
+        if not raw.strip():
+            raise ValueError("Duration input file is empty.")
+        return build_duration_request_from_dict(json.loads(raw))
+    if input_format == "csv":
+        return build_duration_request_from_rows(
+            read_csv_text(Path(input_path).read_text(encoding="utf-8-sig"))
+        )
+    return build_duration_request_from_rows(read_table(input_path, sheet=sheet))
 
 
 def example_payload() -> dict:
@@ -183,8 +262,14 @@ def cli() -> None:
     "--input",
     "input_path",
     required=True,
-    type=click.Path(exists=True),
-    help="Path to input .json, .csv, .xlsx, or .xlsm.",
+    type=click.Path(exists=True, allow_dash=True),
+    help="Path to input .json, .csv, .xlsx, or .xlsm, or '-' to read from stdin.",
+)
+@click.option(
+    "--input-format",
+    type=click.Choice(["json", "csv"]),
+    default=None,
+    help="Input format for stdin (defaults to json) or to override file extension.",
 )
 @click.option(
     "--sheet", required=False, default=None, help="Excel sheet name for .xlsx/.xlsm input."
@@ -253,6 +338,7 @@ def cli() -> None:
 )
 def analyze(
     input_path: str,
+    input_format: str | None,
     sheet: str | None,
     experiment_name: str | None,
     method: str | None,
@@ -267,7 +353,9 @@ def analyze(
     output_path: str | None,
     report_path: str | None,
 ) -> None:
-    """Analyze JSON, CSV, or XLSX experiment input."""
+    """Analyze JSON, CSV, XLSX, or stdin experiment input."""
+    _validate_sheet_option(input_path, input_format, sheet)
+
     decision_policy = None
     if (
         enable_recommendation is not None
@@ -293,15 +381,13 @@ def analyze(
     try:
         input_payload = _load_analysis_payload(
             input_path=input_path,
+            input_format=input_format,
             sheet=sheet,
             defaults=defaults,
         )
     except (ValueError, KeyError, json.JSONDecodeError) as exc:
-        raise click.ClickException(f"Could not read {input_path}: {exc}") from exc
-    if Path(input_path).suffix.lower() in {".csv", ".xlsx", ".xlsm"} and input_payload.get(
-        "experiment_name"
-    ) in {None, "", "table_input_experiment"}:
-        input_payload["experiment_name"] = Path(input_path).stem
+        source = "stdin" if input_path == "-" else input_path
+        raise click.ClickException(f"Could not read {source}: {exc}") from exc
     try:
         _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
     except ValueError as exc:
@@ -314,6 +400,8 @@ Examples:
   ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3
   ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.08 --daily-traffic 60000
   ablift duration --input assumptions.csv
+  echo '{"baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
+  cat assumptions.csv | ablift duration --input - --input-format csv
 """
 
 
@@ -374,9 +462,15 @@ _BAYESIAN_ONLY = ("prob_threshold", "max_expected_loss", "assurance_target", "ma
     "--input",
     "input_path",
     required=False,
-    type=click.Path(exists=True),
-    help="CSV/XLSX with named columns (baseline_rate, relative_mde, daily_traffic, ...). "
-    "CLI flags override file values.",
+    type=click.Path(exists=True, allow_dash=True),
+    help="CSV/XLSX/JSON file or '-' for stdin (baseline_rate, relative_mde, daily_traffic, ...). "
+    "CLI flags override input values.",
+)
+@click.option(
+    "--input-format",
+    type=click.Choice(["json", "csv"]),
+    default=None,
+    help="Input format for stdin (auto-detected if omitted) or to override file extension.",
 )
 @click.option("--sheet", required=False, default=None, help="Excel sheet name for duration input.")
 def duration(
@@ -394,9 +488,14 @@ def duration(
     max_days: int | None,
     output_path: str | None,
     input_path: str | None,
+    input_format: str | None,
     sheet: str | None,
 ) -> None:
     """Estimate how long a conversion-rate test needs to run."""
+    if input_format is not None and input_path is None:
+        raise click.UsageError("--input-format requires --input.")
+    _validate_sheet_option(input_path, input_format, sheet)
+
     flags = {
         "method": method,
         "baseline_rate": baseline_rate,
@@ -424,7 +523,11 @@ def duration(
     try:
         file_keys: set[str] = set()
         if input_path:
-            file_req = build_duration_request_from_rows(read_table(input_path, sheet=sheet))
+            file_req = _load_duration_request(
+                input_path=input_path,
+                input_format=input_format,
+                sheet=sheet,
+            )
             # When --method overrides the file's method, the file's other settings were written
             # for a different planner, so they are not counted as explicitly requested.
             overridden = method is not None and file_req.get("method", method) != method
@@ -484,7 +587,7 @@ def duration(
             raise click.UsageError(
                 f"Unknown method '{req['method']}'. Use sequential, fixed, or bayesian."
             )
-    except ValueError as exc:
+    except (ValueError, json.JSONDecodeError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     plan_json = json.dumps(
