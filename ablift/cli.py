@@ -24,6 +24,7 @@ from .engine import analyze as run_analysis
 from .engine import parse_payload
 from .models import SCHEMA_VERSION
 from .planning import (
+    _resolve_split,
     bayesian_duration_arpu,
     bayesian_duration_conversion,
     fixed_horizon_duration_arpu,
@@ -687,10 +688,25 @@ _OUT_OF_MEMORY = (
 )
 
 
+def _parse_positional_expected_split(raw: str) -> list[float]:
+    """Parse --expected-split for duration/power, requiring positional weights (control first)."""
+    try:
+        parsed = _parse_expected_split_option(raw)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if isinstance(parsed, dict):
+        raise click.UsageError(
+            "--expected-split takes positional comma-separated positive weights in variant order "
+            "(control first), e.g. '0.9,0.1', not name=weight pairs."
+        )
+    return parsed
+
+
 DURATION_EPILOG = """\b
 Examples:
   ablift duration --method sequential --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000
   ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3
+  ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --expected-split 0.9,0.1
   ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.08 --daily-traffic 60000
   ablift duration --metric arpu --baseline-mean 12.5 --baseline-sd 25.0 --relative-mde 0.05 --daily-traffic 50000
   ablift duration --metric arpu --baseline-mean 12.5 --baseline-cv 2.0 --relative-mde 0.05 --daily-traffic 50000
@@ -754,6 +770,15 @@ _METRIC_SCOPED = (*_CONVERSION_ONLY, *_ARPU_ONLY)
 @click.option(
     "--n-variants", type=int, default=None, help="Variants including control. [default: 2]"
 )
+@click.option(
+    "--expected-split",
+    type=str,
+    default=None,
+    help=(
+        "Expected traffic split weights in variant order (control first), as comma-separated "
+        "positive numbers (e.g. '0.9,0.1' or '80,10,10'). Normalized to sum to 1."
+    ),
+)
 @click.option("--alpha", type=float, default=None, help="Family-wise alpha. [default: 0.05]")
 @click.option("--power", type=float, default=None, help="Target power. [default: 0.8]")
 @click.option(
@@ -812,6 +837,7 @@ def duration(
     relative_mde: float | None,
     daily_traffic: int | None,
     n_variants: int | None,
+    expected_split: str | None,
     alpha: float | None,
     power: float | None,
     sequential_tau: float | None,
@@ -828,6 +854,9 @@ def duration(
     if input_format is not None and input_path is None:
         raise click.UsageError("--input-format requires --input.")
     _validate_sheet_option(input_path, input_format, sheet)
+    parsed_expected_split = (
+        _parse_positional_expected_split(expected_split) if expected_split is not None else None
+    )
     flags = {
         "metric": metric,
         "method": method,
@@ -838,6 +867,7 @@ def duration(
         "relative_mde": relative_mde,
         "daily_traffic": daily_traffic,
         "n_variants": n_variants,
+        "expected_split": parsed_expected_split,
         "alpha": alpha,
         "power": power,
         "sequential_tau": sequential_tau,
@@ -954,12 +984,23 @@ def duration(
                 "uses them."
             )
 
+        if req.get("expected_split") is not None:
+            if req["n_variants"] < 2:
+                raise click.UsageError(
+                    "n_variants must be at least 2 (control plus one treatment)."
+                )
+            try:
+                _resolve_split(req["expected_split"], req["n_variants"])
+            except ValueError as exc:
+                raise click.UsageError(str(exc)) from exc
+
         if req["metric"] == "conversion_rate":
             common = {
                 "baseline_rate": req["baseline_rate"],
                 "relative_mde": req["relative_mde"],
                 "daily_total_traffic": req["daily_traffic"],
                 "n_variants": req["n_variants"],
+                "expected_split": req.get("expected_split"),
             }
             if req["method"] == "sequential":
                 plan = sequential_duration_conversion(
@@ -988,6 +1029,7 @@ def duration(
                 "relative_mde": req["relative_mde"],
                 "daily_total_traffic": req["daily_traffic"],
                 "n_variants": req["n_variants"],
+                "expected_split": req.get("expected_split"),
             }
             if req["method"] == "sequential":
                 plan = sequential_duration_arpu(
@@ -1008,6 +1050,8 @@ def duration(
                     assurance_target=req["assurance_target"],
                     max_days=req["max_days"],
                 )
+    except UsageOptionError as exc:
+        raise click.UsageError(str(exc)) from exc
     except (ValueError, json.JSONDecodeError) as exc:
         raise click.ClickException(str(exc)) from exc
     except MemoryError as exc:
@@ -1019,6 +1063,8 @@ def duration(
             "method": plan.method,
             "estimated_days": plan.estimated_days,
             "n_per_variant": plan.n_per_variant,
+            "n_by_variant": plan.n_by_variant,
+            "n_total": plan.n_total,
             "assumptions": plan.assumptions,
             "diagnostics": plan.diagnostics,
         },

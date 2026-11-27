@@ -9,6 +9,10 @@ ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 -
 # Classic fixed-horizon (only valid if you look once, at the end)
 ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3
 
+# Unequal traffic splits (e.g. 90/10 canary ramp or 80/10/10 holdout; control first)
+ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --expected-split 0.9,0.1
+ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3 --expected-split 80,10,10
+
 # Bayesian assurance (simulation-based)
 ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.08 --daily-traffic 60000 --max-days 60
 
@@ -26,7 +30,7 @@ cat examples/duration_inputs.csv | ablift duration --input - --input-format csv
 ```
 
 Methods:
-- `sequential` (default): smallest sample size per variant at which the always-valid mSPRT test reaches the target power. This is a conservative upper bound, since the test may stop earlier if the true effect exceeds the MDE. Diagnostics include `fixed_horizon_n_per_variant` and `sequential_inflation` (typically about 2x).
+- `sequential` (default): smallest sample size at which the always-valid mSPRT test reaches the target power for every treatment arm. This is a conservative upper bound, since the test may stop earlier if the true effect exceeds the MDE. Diagnostics include `fixed_horizon_n_per_variant` and `sequential_inflation` (typically about 2x).
 - `fixed`: classic fixed-horizon sample size (two-proportion z test for `conversion_rate`, two-sample z test for `arpu`). Only valid if you analyze once. The output reports `"method": "fixed_horizon"`.
 - `bayesian`: simulation-based assurance, the probability of reaching the Bayesian decision thresholds within `--max-days`. Simulations are vectorised and the earliest qualifying day is found by doubling then bisecting, so even a 365-day horizon plans in about a second (Beta-Binomial for `conversion_rate`, Normal-Inverse-Gamma for `arpu`).
 
@@ -37,9 +41,10 @@ Inputs:
 - For `conversion_rate`: `--baseline-rate`, `--relative-mde`, and `--daily-traffic` are required.
 - For `arpu`: `--baseline-mean`, either `--baseline-sd` or `--baseline-cv` (`sd = |mean| * cv`, not both), `--relative-mde`, and `--daily-traffic` are required.
 - Required assumptions can come from flags or `--input`. The command never prompts; missing values are a usage error (exit code 2).
-- Optional: `--method`, `--n-variants` (default 2, including control), `--alpha` (0.05), `--power` (0.8), `--sequential-tau` (defaults to 10% of the baseline rate or mean), `--prob-threshold`, `--max-expected-loss`, `--assurance-target`, `--max-days`, `--input-format {json,csv}`, `--output`.
-- `--input` takes a CSV/XLSX/JSON file or `-` for stdin with **named** fields/columns: `metric`, `method`, `baseline_rate`, `baseline_mean`, `baseline_sd`, `baseline_cv`, `relative_mde`, `daily_traffic`, `n_variants`, `alpha`, `power`, `sequential_tau`, `prob_threshold`, `max_expected_loss`, `assurance_target`, `max_days`. Unknown columns or fields are an error. CLI flags override input values.
+- Optional: `--method`, `--n-variants` (default 2, including control), `--expected-split` (comma-separated positive weights in variant order, control first, e.g. `0.9,0.1` or `80,10,10`; must have length `n_variants` and are normalized to sum to 1), `--alpha` (0.05), `--power` (0.8), `--sequential-tau` (defaults to 10% of the baseline rate or mean), `--prob-threshold`, `--max-expected-loss`, `--assurance-target`, `--max-days`, `--input-format {json,csv}`, `--output`.
+- `--input` takes a CSV/XLSX/JSON file or `-` for stdin with **named** fields/columns: `metric`, `method`, `baseline_rate`, `baseline_mean`, `baseline_sd`, `baseline_cv`, `relative_mde`, `daily_traffic`, `n_variants`, `expected_split` (JSON array of positive numbers like `[0.9, 0.1]` or comma-separated string like `"0.9,0.1"` in CSV/XLSX), `alpha`, `power`, `sequential_tau`, `prob_threshold`, `max_expected_loss`, `assurance_target`, `max_days`. Unknown columns or fields are an error. CLI flags override input values.
 - Settings the chosen metric or method does not use are a usage error rather than being silently ignored: `--baseline-rate` is rejected for `arpu`; `--baseline-mean`, `--baseline-sd`, and `--baseline-cv` are rejected for `conversion_rate`; `--alpha`, `--power` and `--sequential-tau` do not apply to `bayesian`; `--prob-threshold`, `--max-expected-loss`, `--assurance-target` and `--max-days` apply only to `bayesian`; `--sequential-tau` applies only to `sequential`.
+- Output (`ablift schema duration-output`) reports `estimated_days` (`n_total / daily_traffic` for frequentist modes), `n_by_variant` (per-arm sample sizes in variant order), `n_total`, and `n_per_variant` (control arm sample size, equal to every arm under an equal split). With unequal splits, the plan sizes for the worst-case treatment arm so every treatment reaches target power.
 
 Example `--input` file:
 
