@@ -26,6 +26,8 @@ ablift schema analyze-output --output analyze-output.schema.json
 6. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
 7. For planning questions, run `ablift duration` (flags, file, or `--input -`). When the sample size is already fixed, run `ablift power` to get the power for a given lift, or the smallest detectable lift.
 
+When aggregating raw exposure and event tables in SQL before piping into `ablift`, start from the [reference SQL query](sql.md).
+
 Before running analyses in CI or an agent sandbox, check the environment:
 
 ```bash

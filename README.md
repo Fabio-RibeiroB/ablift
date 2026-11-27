@@ -84,6 +84,7 @@ Run `ablift <command> --help` for every option.
 ## Documentation
 
 - [Inputs](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/inputs.md): choosing a metric, the JSON contract, CSV/XLSX layouts, stdin and `pyproject.toml` defaults
+- [Reference SQL](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/sql.md): ANSI SQL query for turning raw exposure and event tables into aggregated CSV or CUPED JSON input
 - [Statistical methods](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/methods.md): what each method computes and how multiple variants are handled
 - [Duration and power](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/duration.md): sample size, runtime, power and minimum detectable effect
 - [Agents and automation](https://github.com/Fabio-RibeiroB/ablift/blob/main/docs/agents.md): schemas, a step-by-step playbook, exit codes and every output field
