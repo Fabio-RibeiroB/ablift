@@ -12,6 +12,7 @@ SCHEMA_NAMES: tuple[str, ...] = (
     "analyze-output",
     "duration-input",
     "duration-output",
+    "power-output",
 )
 
 
@@ -848,11 +849,57 @@ def build_duration_output_schema() -> dict[str, Any]:
     }
 
 
+def build_power_output_schema() -> dict[str, Any]:
+    """Return the JSON Schema for ``ablift power`` JSON output payloads."""
+    return {
+        "$schema": JSON_SCHEMA_DRAFT,
+        "$id": f"https://ablift.dev/schemas/v{SCHEMA_VERSION}/power-output.json",
+        "title": "ablift power output",
+        "description": f"Output JSON contract for 'ablift power' (schema_version {SCHEMA_VERSION}).",
+        "type": "object",
+        "properties": {
+            "schema_version": {"type": "string", "const": SCHEMA_VERSION},
+            "solved_for": {
+                "type": "string",
+                "enum": ["power", "relative_mde"],
+                "description": "Which quantity was computed from the others.",
+            },
+            "method": {"type": "string", "enum": ["fixed_horizon", "sequential"]},
+            "power": {"type": "number", "minimum": 0, "maximum": 1},
+            "relative_mde": {"type": "number", "exclusiveMinimum": 0},
+            "absolute_mde": {"type": "number", "minimum": 0},
+            "n_per_variant": {"type": "integer", "minimum": 2},
+            "assumptions": {
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+                    "n_variants": {"type": "integer", "minimum": 2},
+                    "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+                    "alpha_per_comparison": {"type": "number"},
+                },
+                "required": ["metric", "n_per_variant", "n_variants", "alpha"],
+            },
+        },
+        "required": [
+            "schema_version",
+            "solved_for",
+            "method",
+            "power",
+            "relative_mde",
+            "absolute_mde",
+            "n_per_variant",
+            "assumptions",
+        ],
+        "additionalProperties": False,
+    }
+
+
 _SCHEMA_BUILDERS = {
     "analyze-input": build_analyze_input_schema,
     "analyze-output": build_analyze_output_schema,
     "duration-input": build_duration_input_schema,
     "duration-output": build_duration_output_schema,
+    "power-output": build_power_output_schema,
 }
 
 

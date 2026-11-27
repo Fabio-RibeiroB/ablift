@@ -1,6 +1,6 @@
-# Duration planning
+# Duration and power
 
-`ablift duration` estimates how many visitors, and how many days, a test needs before it can reach a decision.
+`ablift duration` estimates how many visitors, and how many days, a test needs before it can reach a decision. [`ablift power`](#power-and-minimum-detectable-effect) answers the reverse questions for a sample size you already have.
 
 ```bash
 # Sequential conversion rate (default): mSPRT sample size
@@ -54,3 +54,29 @@ ARPU `--input` file:
 metric,method,baseline_mean,baseline_sd,relative_mde,daily_traffic,n_variants,alpha,power
 arpu,sequential,12.5,25.0,0.05,50000,2,0.05,0.8
 ```
+
+## Power and minimum detectable effect
+
+`ablift power` takes a fixed sample size per variant and solves for whichever quantity you leave out:
+
+- give `--relative-mde` to get the **power**: the chance the test detects a lift of that size;
+- leave it out to get the **minimum detectable effect (MDE)**: the smallest relative lift detectable at `--power` (default `0.8`).
+
+```bash
+# What power do 10,000 users per variant give for a +10% lift on an 8% baseline?
+ablift power --baseline-rate 0.08 --n-per-variant 10000 --relative-mde 0.1
+
+# What is the smallest lift 10,000 users per variant can detect with 80% power?
+ablift power --baseline-rate 0.08 --n-per-variant 10000
+
+# ARPU, 90% power
+ablift power --metric arpu --baseline-mean 12.5 --baseline-sd 25 --n-per-variant 20000 --power 0.9
+
+# The same questions for the always-valid sequential test
+ablift power --method sequential --baseline-rate 0.04 --n-per-variant 50000 --relative-mde 0.1
+```
+
+- `--method fixed` (the default) is the classic single-look two-sided z-test, so results match standard power calculators and statsmodels' `NormalIndPower`. `--method sequential` uses the mSPRT, which needs a larger effect for the same power but lets you look as often as you like.
+- `--n-variants` applies the same Bonferroni correction as `analyze` and `duration`.
+- The formulas are shared with `duration`: feeding `duration`'s sample size back into `power` returns the planned power and MDE.
+- Output (`ablift schema power-output`) reports `solved_for` (`power` or `relative_mde`), `power`, `relative_mde`, `absolute_mde`, `n_per_variant` and the `assumptions` used.
