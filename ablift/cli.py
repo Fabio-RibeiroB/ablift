@@ -5,6 +5,7 @@ import json
 import math
 import sys
 import tomllib
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from .planning import (
     sequential_duration_arpu,
     sequential_duration_conversion,
 )
+from .power import power_analysis
 from .reporting import build_markdown_report
 from .schemas import SCHEMA_NAMES, get_all_schemas, get_schema
 
@@ -1001,6 +1003,124 @@ def doctor(strict: bool, json_output: bool) -> None:
             )
     if strict and not result["ok"]:
         raise SystemExit(1)
+
+
+POWER_EPILOG = """\b
+Examples:
+  ablift power --baseline-rate 0.08 --n-per-variant 10000 --relative-mde 0.1
+  ablift power --baseline-rate 0.08 --n-per-variant 10000
+  ablift power --metric arpu --baseline-mean 12.5 --baseline-sd 25 --n-per-variant 20000
+  ablift power --method sequential --baseline-rate 0.04 --n-per-variant 50000 --relative-mde 0.1
+"""
+
+
+@cli.command(epilog=POWER_EPILOG)
+@click.option(
+    "--metric",
+    type=click.Choice(["conversion_rate", "arpu"]),
+    default="conversion_rate",
+    show_default=True,
+)
+@click.option(
+    "--method",
+    type=click.Choice(["fixed", "sequential"]),
+    default="fixed",
+    show_default=True,
+    help="'fixed' is the classic single-look test; 'sequential' matches mSPRT analysis.",
+)
+@click.option("--n-per-variant", type=int, required=True, help="Users per variant.")
+@click.option(
+    "--relative-mde",
+    type=float,
+    default=None,
+    help="Relative lift to detect (e.g. 0.1 for +10%). Give it to get the power.",
+)
+@click.option(
+    "--power",
+    "target_power",
+    type=float,
+    default=None,
+    help="Target power. Give it (or neither) to get the minimum detectable lift. [default: 0.8]",
+)
+@click.option("--baseline-rate", type=float, default=None, help="Baseline conversion rate.")
+@click.option("--baseline-mean", type=float, default=None, help="Baseline ARPU mean.")
+@click.option("--baseline-sd", type=float, default=None, help="Baseline ARPU standard deviation.")
+@click.option("--baseline-cv", type=float, default=None, help="Baseline ARPU sd / mean.")
+@click.option("--n-variants", type=int, default=2, show_default=True, help="Including control.")
+@click.option("--alpha", type=float, default=0.05, show_default=True, help="Family-wise alpha.")
+@click.option(
+    "--sequential-tau",
+    type=float,
+    default=None,
+    help="mSPRT mixing parameter (sequential only). Defaults to 10% of the baseline.",
+)
+@click.option("--output", "output_path", type=click.Path(), default=None)
+def power(
+    metric: str,
+    method: str,
+    n_per_variant: int,
+    relative_mde: float | None,
+    target_power: float | None,
+    baseline_rate: float | None,
+    baseline_mean: float | None,
+    baseline_sd: float | None,
+    baseline_cv: float | None,
+    n_variants: int,
+    alpha: float,
+    sequential_tau: float | None,
+    output_path: str | None,
+) -> None:
+    """Power for a given sample size, or the smallest lift it can detect."""
+    if relative_mde is not None and target_power is not None:
+        raise click.UsageError(
+            "Give --relative-mde to get the power, or --power to get the detectable lift, not both."
+        )
+    if sequential_tau is not None and method != "sequential":
+        raise click.UsageError("--sequential-tau only applies to --method sequential.")
+    wrong = (
+        [
+            ("--baseline-mean", baseline_mean),
+            ("--baseline-sd", baseline_sd),
+            ("--baseline-cv", baseline_cv),
+        ]
+        if metric == "conversion_rate"
+        else [("--baseline-rate", baseline_rate)]
+    )
+    unused = [flag for flag, value in wrong if value is not None]
+    if unused:
+        raise click.UsageError(f"Not used by --metric {metric}: {', '.join(unused)}.")
+    if metric == "conversion_rate" and baseline_rate is None:
+        raise click.UsageError("Missing --baseline-rate.")
+    if metric == "arpu" and (
+        baseline_mean is None or (baseline_sd is None) == (baseline_cv is None)
+    ):
+        raise click.UsageError(
+            "--metric arpu needs --baseline-mean and one of --baseline-sd or --baseline-cv."
+        )
+
+    try:
+        result = power_analysis(
+            metric=metric,
+            method=method,
+            n_per_variant=n_per_variant,
+            relative_mde=relative_mde,
+            power=None if relative_mde is not None else (target_power or 0.8),
+            baseline_rate=baseline_rate,
+            baseline_mean=baseline_mean,
+            baseline_sd=baseline_sd,
+            baseline_cv=baseline_cv,
+            n_variants=n_variants,
+            alpha=alpha,
+            sequential_tau=sequential_tau,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    rendered = json.dumps({"schema_version": SCHEMA_VERSION, **asdict(result)}, indent=2)
+    if output_path:
+        _write_text(output_path, rendered + "\n")
+    else:
+        click.echo(rendered)
 
 
 @cli.command("example-input")

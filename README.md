@@ -41,6 +41,9 @@ printf 'variant,visitors,conversions\ncontrol,30000,1200\nnew_checkout,30000,141
 
 # Plan how long a test needs to run
 ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000
+
+# Power analysis: what lift can 10,000 users per variant detect?
+ablift power --baseline-rate 0.08 --n-per-variant 10000
 ```
 
 Add `--report report.md` to any `analyze` run for a human-readable Markdown summary.
@@ -60,7 +63,7 @@ Also included:
 - **Guardrail and secondary metrics** evaluated per variant
 - **SRM checks** with custom traffic splits (`--expected-split 90,10`)
 - **Heavy-tailed revenue handling** with pooled winsorization and bootstrap intervals
-- **Duration planning** for conversion rate and ARPU (`sequential`, `fixed`, `bayesian`)
+- **Duration planning and power analysis** for conversion rate and ARPU: sample size and days (`duration`), or power and minimum detectable effect for a given sample size (`power`)
 - **Input** from JSON, CSV, XLSX or stdin, with **output** as JSON and an optional Markdown report
 
 ## Commands
@@ -69,6 +72,7 @@ Also included:
 |---|---|
 | `ablift analyze` | Analyze an experiment from JSON, CSV, XLSX or stdin |
 | `ablift duration` | Estimate the sample size and days a test needs |
+| `ablift power` | Power for a given sample size, or the smallest lift it can detect |
 | `ablift schema` | Print the JSON Schema for inputs and outputs |
 | `ablift example-input` | Print a starter JSON input |
 | `ablift doctor` | Check the environment (`--strict` fails CI on problems, `--json-output` for agents) |
@@ -79,7 +83,7 @@ Run `ablift <command> --help` for every option.
 
 - [Inputs](docs/inputs.md): choosing a metric, the JSON contract, CSV/XLSX layouts, stdin and `pyproject.toml` defaults
 - [Statistical methods](docs/methods.md): what each method computes and how multiple variants are handled
-- [Duration planning](docs/duration.md): sample size and runtime for each method
+- [Duration and power](docs/duration.md): sample size, runtime, power and minimum detectable effect
 - [Agents and automation](docs/agents.md): schemas, a step-by-step playbook, exit codes and every output field
 - [Changelog](CHANGELOG.md)
 

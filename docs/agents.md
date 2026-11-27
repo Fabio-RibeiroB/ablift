@@ -11,19 +11,20 @@ ablift schema analyze-input
 ablift schema analyze-output
 ablift schema duration-input
 ablift schema duration-output
+ablift schema power-output
 ablift schema --all
 ablift schema analyze-output --output analyze-output.schema.json
 ```
 
 ## Agent playbook
 
-1. Inspect contracts programmatically with `ablift schema --all` (or `ablift schema analyze-input` / `analyze-output` / `duration-input` / `duration-output`).
+1. Inspect contracts programmatically with `ablift schema --all` (or `ablift schema analyze-input` / `analyze-output` / `duration-input` / `duration-output` / `power-output`).
 2. Run `ablift analyze --input ...` with a JSON, CSV, or XLSX file, or `--input -` to pipe JSON/CSV over stdin without temporary files.
 3. For CSV/XLSX (or piped CSV with `--input-format csv`), format data with positional columns (see [CSV/XLSX input](inputs.md#csvxlsx-input)).
 4. Read `recommendation.action`, `decision_confidence`, and `risk_flags`.
 5. If `action=continue_collecting_data`, re-run on the cumulative data later. With `--method sequential` this is always safe, however often you look.
 6. If `action=investigate_data_quality`, resolve SRM or tracking issues before deciding to ship.
-7. For planning questions, run `ablift duration` (flags, file, or `--input -`).
+7. For planning questions, run `ablift duration` (flags, file, or `--input -`). When the sample size is already fixed, run `ablift power` to get the power for a given lift, or the smallest detectable lift.
 
 Before running analyses in CI or an agent sandbox, check the environment:
 

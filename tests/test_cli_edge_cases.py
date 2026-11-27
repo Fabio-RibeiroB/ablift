@@ -492,7 +492,7 @@ class MetaCommandTests(TmpDirCase):
         section = result.output.split("Commands:")[1]
         names = [line.split()[0] for line in section.strip().splitlines() if line.strip()]
         self.assertEqual(
-            sorted(names), ["analyze", "doctor", "duration", "example-input", "schema"]
+            sorted(names), ["analyze", "doctor", "duration", "example-input", "power", "schema"]
         )
         self.assertNotIn("analyze-file", result.output)
         self.assertNotIn("example-duration-prompt", result.output)
