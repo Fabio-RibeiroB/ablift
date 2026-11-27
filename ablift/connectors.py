@@ -152,7 +152,7 @@ def _find_control_column(
     rows: list[dict[str, Any]],
     skip_cols: int,
     *,
-    exclude_cols: set[str] | None = None,
+    exclude_cols: set[str | None] | None = None,
 ) -> str | None:
     """Return the name of a boolean-valued column beyond the first skip_cols positional columns.
 
@@ -183,9 +183,14 @@ def _find_control_column(
     return None
 
 
-def _resolve_covariate_column(cols: list[str], covariate_column: str, *, reserved: set[str]) -> str:
-    """Resolve ``--covariate-column`` by exact column header or 1-based column index."""
-    spec = covariate_column.strip()
+def _resolve_covariate_column(cols: list[str], covariate_column: Any) -> str:
+    """Resolve ``--covariate-column`` (header or 1-based index) for row-level input."""
+    if len(cols) < 3:
+        raise UsageOptionError(
+            "Row-level input with --covariate-column requires at least 3 columns: "
+            "variant name, outcome, and covariate."
+        )
+    spec = str(covariate_column).strip()
     if not spec:
         raise UsageOptionError("--covariate-column cannot be empty.")
 
@@ -207,7 +212,7 @@ def _resolve_covariate_column(cols: list[str], covariate_column: str, *, reserve
             f"Available columns: {', '.join(cols)}."
         )
 
-    if resolved in reserved:
+    if resolved in (cols[0], cols[1]):
         raise UsageOptionError(
             f"Covariate column {resolved!r} cannot be the same as the variant or outcome column."
         )
@@ -302,20 +307,11 @@ def detect_input_shape(
             )
         return "aggregated"
 
-    cov_col: str | None = None
-    if covariate_column is not None:
-        if len(cols) < 3:
-            raise UsageOptionError(
-                "Row-level input with --covariate-column requires at least 3 columns: "
-                "variant name, outcome, and covariate."
-            )
-        cov_col = _resolve_covariate_column(
-            cols, str(covariate_column), reserved={cols[0], cols[1]}
-        )
-
-    exclude_cols = {cov_col} if cov_col is not None else None
-    control_col = _find_control_column(rows, skip_cols=2, exclude_cols=exclude_cols)
-    data_cols = [c for c in cols if c != control_col and c != cov_col]
+    cov_col = (
+        None if covariate_column is None else _resolve_covariate_column(cols, covariate_column)
+    )
+    control_col = _find_control_column(rows, skip_cols=2, exclude_cols={cov_col})
+    data_cols = [c for c in cols if c not in (control_col, cov_col)]
     if len(data_cols) <= 2:
         return "row_level"
     duplicates = sorted({n for n in names if names.count(n) > 1})
@@ -334,10 +330,6 @@ def _build_payload_from_ratio_row_level(
         raise UsageOptionError("--winsorize is only supported for row-level ARPU data.")
     if defaults.get("bootstrap_samples") is not None:
         raise UsageOptionError("--bootstrap-samples is only supported for row-level ARPU data.")
-    if defaults.get("covariate_column") is not None:
-        raise UsageOptionError(
-            "--covariate-column is only supported for row-level conversion_rate or arpu data, not ratio."
-        )
     cols = list(rows[0].keys())
     if len(cols) < 3:
         raise ValueError(
@@ -427,18 +419,10 @@ def _build_payload_from_row_level(
     variant_col = cols[0]
     outcome_col = cols[1]
     covariate_column = defaults.get("covariate_column")
-    cov_col: str | None = None
-    if covariate_column is not None:
-        if len(cols) < 3:
-            raise UsageOptionError(
-                "Row-level input with --covariate-column requires at least 3 columns: "
-                "variant name, outcome, and covariate."
-            )
-        cov_col = _resolve_covariate_column(
-            cols, str(covariate_column), reserved={variant_col, outcome_col}
-        )
-    exclude_cols = {cov_col} if cov_col is not None else None
-    control_col = _find_control_column(rows, skip_cols=2, exclude_cols=exclude_cols)
+    cov_col = (
+        None if covariate_column is None else _resolve_covariate_column(cols, covariate_column)
+    )
+    control_col = _find_control_column(rows, skip_cols=2, exclude_cols={cov_col})
 
     # Group rows by variant, preserving first-appearance order
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -486,17 +470,14 @@ def _build_payload_from_row_level(
     variants: list[dict[str, Any]] = []
     if is_conversion:
         for name, group_rows in groups.items():
+            y_arr = np.asarray([_to_bool(r.get(outcome_col)) for r in group_rows], dtype=float)
             variant_obj: dict[str, Any] = {
                 "name": name,
                 "is_control": is_control_by_name[name],
                 "visitors": len(group_rows),
-                "conversions": sum(_to_bool(r.get(outcome_col)) for r in group_rows),
+                "conversions": int(y_arr.sum()),
             }
             if cov_col is not None:
-                y_arr = np.asarray(
-                    [1.0 if _to_bool(r.get(outcome_col)) else 0.0 for r in group_rows],
-                    dtype=float,
-                )
                 x_arr = np.asarray(
                     [_to_finite_float(r.get(cov_col), cov_col) for r in group_rows],
                     dtype=float,
@@ -613,11 +594,6 @@ def _build_payload_from_aggregated(
     if defaults.get("bootstrap_samples") is not None:
         raise UsageOptionError(
             "--bootstrap-samples requires row-level ARPU data (aggregated inputs have no individual rows to resample)."
-        )
-    if defaults.get("covariate_column") is not None:
-        raise UsageOptionError(
-            "--covariate-column requires row-level CSV/XLSX data "
-            "(aggregated inputs have no individual rows)."
         )
     cols = list(rows[0].keys())
     if len(cols) < 3:
