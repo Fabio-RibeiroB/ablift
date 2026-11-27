@@ -393,6 +393,8 @@ class TestCupedMethodsAndDiagnostics:
                 "bayes_prob_beats_control": 0.95,
                 "max_expected_loss": 0.1,
             }
+        else:
+            payload["decision_policy"] = {"enabled": True}
 
         validate_json_schema(payload, get_schema("analyze-input"))
         res = analyze(parse_payload(payload))
@@ -445,8 +447,8 @@ class TestCupedMethodsAndDiagnostics:
         cuped_meta = res.analysis_settings.input_interpretation["cuped"]
         assert cuped_meta["covariate_imbalanced"] is True
         assert cuped_meta["covariate_balance_p_value"] < 0.001
-        assert res.recommendation is not None
-        assert "covariate_imbalance" in res.recommendation.risk_flags
+        assert res.recommendation is None
+        assert "covariate_imbalance" in res.risk_flags
 
         report = build_markdown_report(res)
         assert "CUPED covariate balance warning (`covariate_imbalance`)" in report

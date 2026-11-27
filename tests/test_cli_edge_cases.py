@@ -76,7 +76,7 @@ class OutputFileTests(TmpDirCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(json.loads(result.output)["experiment_name"], "in")
         text = report.read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("# A/B Decision Report: in"))
+        self.assertTrue(text.startswith("# A/B Analysis Report: in"))
         self.assertIn("## Variant Comparisons", text)
 
     def test_output_and_report_together(self):
@@ -88,7 +88,7 @@ class OutputFileTests(TmpDirCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(result.output.strip(), "")
         self.assertTrue(out.exists())
-        self.assertTrue(report.read_text(encoding="utf-8").startswith("# A/B Decision Report"))
+        self.assertTrue(report.read_text(encoding="utf-8").startswith("# A/B Analysis Report"))
 
     def test_duration_output_creates_nested_dirs(self):
         out = self.dir / "x" / "y" / "plan.json"
@@ -188,13 +188,13 @@ class PrecedenceTests(TmpDirCase):
         self.assertEqual(policy["thresholds"]["bayes_prob_beats_control"], 0.7)
         self.assertEqual(policy["thresholds"]["max_expected_loss"], 0.01)
 
-    def test_no_recommendation_disables_pyproject_policy(self):
+    def test_no_recommend_disables_pyproject_policy(self):
         src = self.write("in.csv", CSV_BASIC)
         self.pyproject(
             "[tool.ablift]\nsamples = 2000\n\n[tool.ablift.decision_policy]\n"
             "enabled = true\nbayes_prob_beats_control = 0.8\nmax_expected_loss = 0.01\n"
         )
-        result = self.run_in_dir(["analyze", "--input", src.name, "--no-recommendation"])
+        result = self.run_in_dir(["analyze", "--input", src.name, "--no-recommend"])
         self.assertEqual(result.exit_code, 0, result.output)
         data = json.loads(result.output)
         self.assertIsNone(data["recommendation"])
@@ -218,7 +218,7 @@ class PrecedenceTests(TmpDirCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIsNotNone(json.loads(result.output)["recommendation"])
 
-    def test_no_recommendation_on_json_with_policy(self):
+    def test_no_recommend_on_json_with_policy(self):
         payload = dict(
             BASE_PAYLOAD,
             samples=2000,
@@ -228,7 +228,7 @@ class PrecedenceTests(TmpDirCase):
         self.assertIsNotNone(
             json.loads(self.run_cli(["analyze", "--input", src]).output)["recommendation"]
         )
-        off = self.run_cli(["analyze", "--input", src, "--no-recommendation"])
+        off = self.run_cli(["analyze", "--input", src, "--no-recommend"])
         self.assertIsNone(json.loads(off.output)["recommendation"])
 
     def test_malformed_pyproject_is_clean_error(self):
@@ -512,13 +512,13 @@ class MetaCommandTests(TmpDirCase):
         example = self.run_cli(["example-input"])
         self.assertEqual(example.exit_code, 0, example.output)
         payload = json.loads(example.output)
-        self.assertIn("decision_policy", payload)
+        self.assertNotIn("decision_policy", payload)  # recommendations are opt-in
         src = self.write("example.json", example.output)
         result = self.run_cli(["analyze", "--input", src, "--samples", 2000])
         self.assertEqual(result.exit_code, 0, result.output)
         data = json.loads(result.output)
         self.assertEqual(data["experiment_name"], payload["experiment_name"])
-        self.assertIsNotNone(data["recommendation"])
+        self.assertIsNone(data["recommendation"])
 
     def test_example_input_with_report(self):
         example = self.run_cli(["example-input"])
@@ -568,7 +568,9 @@ class AgentWorkflowTests(TmpDirCase):
                 f"snap_day{day}.csv",
                 f"variant,visitors,conversions\ncontrol,{cv},{cc}\ntreatment,{tv},{tc}\n",
             )
-            result = self.run_cli(["analyze", "--input", src, "--method", "sequential"])
+            result = self.run_cli(
+                ["analyze", "--input", src, "--method", "sequential", "--recommend"]
+            )
             self.assertEqual(result.exit_code, 0, f"day {day}: {result.output}")
             data = json.loads(result.output)
             self.assertEqual(data["schema_version"], "1")

@@ -168,7 +168,8 @@ class FixedHorizonConversionTests(unittest.TestCase):
         # 0/500 vs 0/500 is not certainty of zero difference (Wald gave [0, 0], see #38).
         self.assertLess(comp.ci_low, -0.005)
         self.assertGreater(comp.ci_high, 0.005)
-        self.assertIn("sparse_conversions", result.recommendation.risk_flags)
+        self.assertIsNone(result.recommendation)
+        self.assertIn("sparse_conversions", result.risk_flags)
 
 
 class FixedHorizonArpuTests(unittest.TestCase):
@@ -324,6 +325,7 @@ class FixedHorizonRecommendationAndReportTests(unittest.TestCase):
                 {
                     "experiment_name": "fixed_win",
                     "method": "fixed",
+                    "decision_policy": {"enabled": True},
                     "variants": [
                         {
                             "name": "control",
@@ -349,6 +351,7 @@ class FixedHorizonRecommendationAndReportTests(unittest.TestCase):
                 {
                     "experiment_name": "fixed_flat",
                     "method": "fixed",
+                    "decision_policy": {"enabled": True},
                     "variants": [
                         {
                             "name": "control",
@@ -372,6 +375,7 @@ class FixedHorizonRecommendationAndReportTests(unittest.TestCase):
                 {
                     "experiment_name": "fixed_loss",
                     "method": "fixed",
+                    "decision_policy": {"enabled": True},
                     "variants": [
                         {
                             "name": "control",
@@ -519,8 +523,6 @@ class FixedHorizonCliTests(unittest.TestCase):
                 (["--method", "fixed", "--sequential-tau", "0.01"], "--sequential-tau"),
                 (["--method", "fixed", "--samples", "5000"], "--samples"),
                 (["--method", "fixed", "--random-seed", "42"], "--random-seed"),
-                (["--method", "fixed", "--enable-recommendation"], "--enable-recommendation"),
-                (["--method", "fixed", "--no-recommendation"], "--no-recommendation"),
                 (["--method", "fixed", "--prob-threshold", "0.95"], "--prob-threshold"),
                 (["--method", "fixed", "--max-expected-loss", "0.001"], "--max-expected-loss"),
             ]
@@ -529,6 +531,13 @@ class FixedHorizonCliTests(unittest.TestCase):
                     res = runner.invoke(cli, ["analyze", "--input", str(csv_path), *extra_flags])
                     self.assertEqual(res.exit_code, 2, res.output)
                     self.assertIn(expected_msg, res.output)
+
+            # Recommendations are method-agnostic, so --recommend is accepted with fixed.
+            res_rec = runner.invoke(
+                cli, ["analyze", "--input", str(csv_path), "--method", "fixed", "--recommend"]
+            )
+            self.assertEqual(res_rec.exit_code, 0, res_rec.output)
+            self.assertIsNotNone(json.loads(res_rec.output)["recommendation"])
 
             # Also rejected when method='fixed' comes from JSON rather than CLI flag.
             res_json = runner.invoke(
@@ -579,7 +588,7 @@ class FixedHorizonCliTests(unittest.TestCase):
         res = CliRunner().invoke(cli, ["analyze", "--help"])
         self.assertEqual(res.exit_code, 0, res.output)
         self.assertIn("fixed", res.output)
-        self.assertIn("single planned look", res.output)
+        self.assertIn("single planned look", " ".join(res.output.split()))
 
 
 if __name__ == "__main__":

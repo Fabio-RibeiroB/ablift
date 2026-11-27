@@ -42,7 +42,7 @@ Examples:
   ablift analyze --input experiment.csv --method fixed
   ablift analyze --input experiment.csv --expected-split 0.9,0.1
   ablift analyze --input experiment.xlsx --sheet Results
-  ablift analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
+  ablift analyze --input experiment.csv --recommend --prob-threshold 0.9 --max-expected-loss 0.005
   ablift analyze --input experiment.json --report report.md
   ablift example-input | ablift analyze --input -
   cat experiment.csv | ablift analyze --input - --input-format csv
@@ -345,11 +345,6 @@ def example_payload() -> dict:
                 ],
             }
         ],
-        "decision_policy": {
-            "enabled": True,
-            "bayes_prob_beats_control": 0.95,
-            "max_expected_loss": 0.001,
-        },
         "samples": 50000,
         "random_seed": 7,
     }
@@ -419,43 +414,41 @@ def run_doctor() -> dict:
     return {"ok": all_passed, "checks": checks}
 
 
-def _validate_fixed_method_flags(
+def _validate_analyze_method_flags(
     *,
     effective_method: str,
     sequential_tau: float | None,
-    enable_recommendation: bool | None,
     prob_threshold: float | None,
     max_expected_loss: float | None,
     samples: int | None,
     random_seed: int | None,
     bootstrap_samples: int | None = None,
 ) -> None:
-    if effective_method != "fixed":
-        return
-    if sequential_tau is not None:
-        raise click.UsageError("--sequential-tau only applies to --method sequential.")
-    bayesian_flags: list[str] = []
-    if enable_recommendation is not None:
-        bayesian_flags.append(
-            "--enable-recommendation" if enable_recommendation else "--no-recommendation"
+    if sequential_tau is not None and effective_method != "sequential":
+        raise click.UsageError(
+            f"--sequential-tau only applies to --method sequential, not --method {effective_method}."
         )
-    if prob_threshold is not None:
-        bayesian_flags.append("--prob-threshold")
-    if max_expected_loss is not None:
-        bayesian_flags.append("--max-expected-loss")
-    if samples is not None:
-        bayesian_flags.append("--samples")
-    if random_seed is not None and bootstrap_samples is None:
-        bayesian_flags.append("--random-seed")
-    if bayesian_flags:
-        joined = ", ".join(bayesian_flags)
-        raise click.UsageError(f"{joined} only apply to --method bayesian, not --method fixed.")
+    if effective_method != "bayesian":
+        bayesian_flags: list[str] = []
+        if prob_threshold is not None:
+            bayesian_flags.append("--prob-threshold")
+        if max_expected_loss is not None:
+            bayesian_flags.append("--max-expected-loss")
+        if samples is not None:
+            bayesian_flags.append("--samples")
+        if random_seed is not None and bootstrap_samples is None:
+            bayesian_flags.append("--random-seed")
+        if bayesian_flags:
+            joined = ", ".join(bayesian_flags)
+            raise click.UsageError(
+                f"{joined} only apply to --method bayesian, not --method {effective_method}."
+            )
 
 
 @click.group()
 @click.version_option(package_name="ablift", prog_name="ablift")
 def cli() -> None:
-    """Agent-friendly CLI for Bayesian, sequential (mSPRT), and fixed-horizon A/B/n experiment decisions."""
+    """Agent-friendly CLI for Bayesian, sequential (mSPRT), and fixed-horizon A/B/n experiment analysis and planning."""
 
 
 @cli.command(epilog=ANALYZE_EPILOG)
@@ -486,15 +479,19 @@ def cli() -> None:
     type=click.Choice(["bayesian", "sequential", "fixed"]),
     default=None,
     help=(
-        "Statistical method override: 'bayesian', 'sequential' (always-valid mSPRT), or "
-        "'fixed' (fixed-horizon frequentist, valid only for a single planned look)."
+        "Statistical method: 'bayesian', 'sequential' (always-valid mSPRT), or "
+        "'fixed' (fixed-horizon frequentist, valid only for a single planned look). "
+        "[default: bayesian]"
     ),
 )
 @click.option(
     "--primary-metric",
     type=click.Choice(["conversion_rate", "arpu", "ratio"]),
     default=None,
-    help="Optional primary metric override (applies to JSON, CSV/XLSX, and stdin inputs).",
+    help=(
+        "Primary metric override (applies to JSON, CSV/XLSX, and stdin inputs). "
+        "[default: conversion_rate]"
+    ),
 )
 @click.option(
     "--winsorize",
@@ -523,39 +520,49 @@ def cli() -> None:
     ),
 )
 @click.option(
-    "--enable-recommendation/--no-recommendation",
+    "--recommend/--no-recommend",
+    "recommend",
     default=None,
-    help="Enable or disable automated Bayesian recommendation output (overrides input and config).",
+    help=(
+        "Opt in to (or disable) automated ship/wait/rollback recommendation output "
+        "(off by default across all methods; overrides input and config)."
+    ),
 )
 @click.option(
     "--prob-threshold",
     type=float,
     default=None,
-    help="Bayesian probability-to-win threshold for recommendations.",
+    help="Bayesian probability-to-win threshold for recommendations (implies --recommend). [default: 0.95]",
 )
 @click.option(
     "--max-expected-loss",
     type=float,
     default=None,
-    help="Bayesian expected-loss threshold for recommendations.",
+    help="Bayesian expected-loss threshold for recommendations (implies --recommend). [default: 0.001]",
 )
 @click.option(
     "--alpha",
     type=float,
     default=None,
-    help="Optional family-wise alpha override (overrides input and config).",
+    help="Family-wise alpha override (overrides input and config). [default: 0.05]",
 )
 @click.option(
     "--sequential-tau",
     type=float,
     default=None,
-    help="mSPRT mixing parameter (prior std on effect size). Defaults to 10% of control baseline.",
+    help="mSPRT mixing parameter (prior std on effect size; sequential only). Defaults to 10% of control baseline.",
 )
 @click.option(
-    "--samples", type=int, default=None, help="Optional Bayesian posterior sample count override."
+    "--samples",
+    type=int,
+    default=None,
+    help="Bayesian posterior sample count override. [default: 50000]",
 )
 @click.option(
-    "--random-seed", type=int, default=None, help="Optional Bayesian random seed override."
+    "--random-seed",
+    type=int,
+    default=None,
+    help="Random seed override for Bayesian sampling or ARPU bootstrap. [default: 7]",
 )
 @click.option(
     "--expected-split",
@@ -590,7 +597,7 @@ def analyze(
     winsorize: float | None,
     bootstrap_samples: int | None,
     covariate_column: str | None,
-    enable_recommendation: bool | None,
+    recommend: bool | None,
     prob_threshold: float | None,
     max_expected_loss: float | None,
     alpha: float | None,
@@ -612,13 +619,9 @@ def analyze(
         raise click.UsageError("--bootstrap-samples must be an integer >= 100.")
 
     decision_policy = None
-    if (
-        enable_recommendation is not None
-        or prob_threshold is not None
-        or max_expected_loss is not None
-    ):
+    if recommend is not None or prob_threshold is not None or max_expected_loss is not None:
         decision_policy = {
-            "enabled": True if enable_recommendation is None else enable_recommendation,
+            "enabled": True if recommend is None else recommend,
             "bayes_prob_beats_control": prob_threshold,
             "max_expected_loss": max_expected_loss,
         }
@@ -660,10 +663,9 @@ def analyze(
         raise click.ClickException(_OUT_OF_MEMORY) from exc
 
     effective_method = str(input_payload.get("method") or "bayesian")
-    _validate_fixed_method_flags(
+    _validate_analyze_method_flags(
         effective_method=effective_method,
         sequential_tau=sequential_tau,
-        enable_recommendation=enable_recommendation,
         prob_threshold=prob_threshold,
         max_expected_loss=max_expected_loss,
         samples=samples,

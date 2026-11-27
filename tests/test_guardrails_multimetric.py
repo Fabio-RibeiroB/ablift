@@ -263,6 +263,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
                     "max_relative_change": 0.05,
                 }
             ],
+            "decision_policy": {"enabled": True},
         }
         result = analyze(parse_payload(payload))
         self.assertEqual(len(result.guardrails), 1)

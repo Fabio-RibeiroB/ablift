@@ -312,7 +312,10 @@ def build_analyze_input_schema() -> dict[str, Any]:
             },
             "DecisionPolicyInput": {
                 "type": "object",
-                "description": "Explicit Bayesian decision policy thresholds.",
+                "description": (
+                    "Opt-in recommendation policy. Set enabled=true for any method to emit a "
+                    "recommendation; threshold fields apply in Bayesian mode."
+                ),
                 "properties": {
                     "enabled": {"type": "boolean", "default": True},
                     "bayes_prob_beats_control": {
@@ -644,6 +647,14 @@ def build_analyze_output_schema() -> dict[str, Any]:
             "guardrails_passed": {"type": "boolean"},
             "guardrails": {"type": "array", "items": {"$ref": "#/$defs/GuardrailResult"}},
             "srm": {"$ref": "#/$defs/SrmResult"},
+            "risk_flags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Experiment and data-quality risk flags (always present, possibly empty, even when "
+                    "recommendation is null)."
+                ),
+            },
             "recommendation": _nullable({"$ref": "#/$defs/Recommendation"}),
             "bayesian_arms": _nullable(
                 {
@@ -667,6 +678,7 @@ def build_analyze_output_schema() -> dict[str, Any]:
             "guardrails_passed",
             "guardrails",
             "srm",
+            "risk_flags",
             "recommendation",
             "bayesian_arms",
             "secondary_metrics",

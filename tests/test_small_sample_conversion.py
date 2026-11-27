@@ -79,16 +79,14 @@ def test_sparse_cells_use_fisher_exact_p_value():
 
 def test_sparse_cells_raise_risk_flag():
     res = fixed((0, 50), (4, 50))
-    assert res.recommendation is not None
-    assert "sparse_conversions" in res.recommendation.risk_flags
+    assert "sparse_conversions" in res.risk_flags
 
 
 def test_large_counts_keep_z_test_and_no_flag():
     res = fixed((400, 10_000), (460, 10_000))
     comp = res.comparisons[0]
     assert comp.test_statistic is not None
-    assert res.recommendation is not None
-    assert "sparse_conversions" not in res.recommendation.risk_flags
+    assert "sparse_conversions" not in res.risk_flags
 
 
 def test_coverage_near_nominal_for_rare_events():

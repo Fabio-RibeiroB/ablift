@@ -40,10 +40,10 @@ For `primary_metric: "ratio"`, provide either:
 The input contract is strict about semantics, not source column names.
 
 `ablift` separates:
-- inference settings: priors, posterior sample count, random seed
-- decision policy: thresholds used to turn Bayesian estimates into actions
+- inference settings: method, metric, priors, alpha, posterior sample count, random seed
+- decision policy: opt-in rule-based recommendations (off by default across all methods)
 
-For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `ablift` reports the posterior estimates but leaves `recommendation` as `null`. Sequential and fixed-horizon runs always produce a recommendation; the Bayesian decision policy does not apply to them.
+By default, `ablift analyze` returns statistical estimates (`comparisons`, `bayesian_arms`), `srm`, `guardrails`, `secondary_metrics`, and top-level `risk_flags`, leaving `recommendation` as `null`. Pass `--recommend` (or set `decision_policy.enabled = true` in JSON or `pyproject.toml`) to opt in to an automated recommendation on any method (`bayesian`, `sequential`, or `fixed`). Use `--no-recommend` to disable a policy configured in the input file or `pyproject.toml`.
 
 For analysis inputs:
 - at least 2 variants are required
@@ -63,10 +63,9 @@ Bayesian defaults:
 - ARPU prior is a weak `Normal-Inverse-Gamma` prior with `mu0=0`, `kappa0=1e-6`, `alpha0=1`, `beta0=1`
 - ratio posterior uses an asymptotic normal approximation parameterized by the Delta-method variance (`delta_normal_asymptotic`)
 
-Bayesian recommendations require an explicit decision policy, either in the input payload, via `[tool.ablift]` in `pyproject.toml`, or via CLI flags:
-- `--enable-recommendation`
-- `--prob-threshold` (default `0.95`)
-- `--max-expected-loss` (default `0.001`)
+Opt-in recommendations (all methods):
+- `--recommend` / `--no-recommend` enables or disables automated recommendation output (works with `bayesian`, `sequential`, and `fixed`).
+- In Bayesian mode, passing `--prob-threshold` (default `0.95`) or `--max-expected-loss` (default `0.001`) also implies `--recommend`.
 
 Sequential defaults:
 - `alpha` defaults to `0.05`
@@ -76,7 +75,10 @@ Sequential defaults:
 Fixed-horizon defaults (`--method fixed`):
 - `alpha` defaults to `0.05` (Bonferroni-adjusted across `n_variants - 1` comparisons, matching `ablift duration --method fixed`).
 - **Single-look assumption:** fixed-horizon p-values and confidence intervals are only valid when evaluated **once** at the planned end of the test. Do not peek repeatedly with `--method fixed`; use `--method sequential` for ongoing monitoring.
-- Sequential-only (`--sequential-tau`) and Bayesian-only (`--samples`, `--random-seed`, `--enable-recommendation`/`--no-recommendation`, `--prob-threshold`, `--max-expected-loss`) CLI flags are rejected with exit code 2 when `--method fixed` is chosen.
+
+Method-scoped CLI flag validation:
+- `--sequential-tau` is rejected with exit code 2 unless `--method sequential` is active.
+- `--samples`, `--prob-threshold`, and `--max-expected-loss` (and `--random-seed` unless `--bootstrap-samples` is also passed) are rejected with exit code 2 unless `--method bayesian` is active.
 
 Internal field meanings:
 - `name`: variant label
@@ -96,14 +98,14 @@ Top-level fields:
 - `expected_split` (optional): expected traffic allocation weights for the SRM check, either as a list of positive numbers matching `variants` order (e.g. `[0.9, 0.1]` or `[90, 10]`) or an object mapping each variant name to a positive number (e.g. `{"control": 0.8, "v1": 0.2}`). Weights are normalized to sum to `1.0`. Defaults to an equal `1/k` split when omitted. Cannot be combined with per-variant `expected_share`.
 - `guardrails` (optional list): supports both **statistical per-variant guardrails** (`metric` + `variants`) and backwards-compatible **threshold guardrails** (`control` + `treatment` floats)
 - `secondary_metrics` (optional list): additional `conversion_rate`, `arpu`, or `ratio` metrics evaluated with the same inference method for full-experiment readouts (informational only; never block recommendations)
-- `decision_policy` (optional, Bayesian mode):
-  - `enabled` (bool)
-  - `bayes_prob_beats_control` (default `0.95`)
-  - `max_expected_loss` (default `0.001`)
+- `decision_policy` (optional, opt-in across all methods):
+  - `enabled` (bool, default `false` when omitted)
+  - `bayes_prob_beats_control` (Bayesian mode only, default `0.95`)
+  - `max_expected_loss` (Bayesian mode only, default `0.001`)
 - `samples` (default `50000`, Bayesian mode)
 - `random_seed` (default `7`)
 
-`decision_thresholds` is still accepted as a legacy alias for an enabled `decision_policy`; use `decision_policy` in new inputs.
+`decision_thresholds` is still accepted as a legacy alias for an enabled Bayesian `decision_policy`; use `decision_policy` in new inputs.
 
 Variant row:
 

@@ -289,7 +289,7 @@ class SchemaValidationAgainstRealPayloadsTests(unittest.TestCase):
         # Bayesian with policy, Bayesian without policy, sequential, and fixed
         for extra_args in (
             [],
-            ["--no-recommendation"],
+            ["--no-recommend"],
             ["--method", "sequential"],
             ["--method", "fixed"],
         ):

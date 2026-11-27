@@ -56,6 +56,7 @@ class EngineTests(unittest.TestCase):
                     "max_relative_change": 0.1,
                 }
             ],
+            "decision_policy": {"enabled": True},
         }
 
         result = analyze(parse_payload(payload))
@@ -76,6 +77,11 @@ class EngineTests(unittest.TestCase):
 
         result = analyze(parse_payload(payload))
         self.assertFalse(result.srm.passed)
+        self.assertIsNone(result.recommendation)
+        self.assertEqual(result.risk_flags, ["srm_detected"])
+
+        payload["decision_policy"] = {"enabled": True}
+        result = analyze(parse_payload(payload))
         self.assertEqual(result.recommendation.action, "investigate_data_quality")
 
     def test_bayesian_without_decision_policy_returns_no_recommendation(self):

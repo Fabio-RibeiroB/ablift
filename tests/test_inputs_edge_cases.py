@@ -373,7 +373,9 @@ class AggregatedInput(unittest.TestCase):
             agg("one_page", "200000", "8100"),
             agg("express_pay", "200000", "8800"),
         ]
-        payload = build_payload_from_rows(rows, {"method": "sequential"})
+        payload = build_payload_from_rows(
+            rows, {"method": "sequential", "decision_policy": {"enabled": True}}
+        )
         res = analyze(parse_payload(payload))
         self.assertEqual(res.recommendation.action, "ship_express_pay")
 

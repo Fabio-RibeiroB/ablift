@@ -1,6 +1,10 @@
 # Agent Notes
 
-`ablift` is a CLI for Bayesian and sequential A/B/n experiment analysis, designed to be called as a tool by AI agents.
+`ablift` is a statistical analysis and planning CLI for Bayesian, sequential (mSPRT), and fixed-horizon A/B/n experiments, designed to be called as a tool by humans, pipelines, and AI agents.
+
+## Scope & Product Philosophy
+- **Analysis tool first:** `ablift analyze` returns statistical estimates (`comparisons`, `bayesian_arms`), data-quality checks (`srm`, `guardrails`, top-level `risk_flags`), and `secondary_metrics`.
+- **Opt-in recommendations:** Automated ship/wait/rollback `recommendation` output is off by default across all methods (`bayesian`, `sequential`, `fixed`) and only produced when callers opt in via `--recommend` or `decision_policy.enabled = true`.
 
 ## Setup
 ```bash

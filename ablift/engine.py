@@ -249,25 +249,25 @@ def _parse_payload(payload: dict) -> AnalysisInput:
     threshold_payload = payload.get("decision_thresholds")
     method = payload.get("method") or "bayesian"
 
-    if method != "bayesian":
-        decision_policy = DecisionPolicy(
-            enabled=True, thresholds=None, source="implicit_method_defaults"
-        )
-    elif decision_policy_payload is not None:
+    if decision_policy_payload is not None:
+        if not isinstance(decision_policy_payload, dict):
+            raise ValueError("'decision_policy' must be a JSON object.")
         enabled = bool(decision_policy_payload.get("enabled", True))
-        merged_thresholds = {
-            "bayes_prob_beats_control": decision_policy_payload.get(
-                "bayes_prob_beats_control", 0.95
-            ),
-            "max_expected_loss": decision_policy_payload.get("max_expected_loss", 0.001),
-        }
-        thresholds = DecisionThresholds(**merged_thresholds) if enabled else None
+        if method == "bayesian" and enabled:
+            prob_raw = decision_policy_payload.get("bayes_prob_beats_control")
+            loss_raw = decision_policy_payload.get("max_expected_loss")
+            thresholds = DecisionThresholds(
+                bayes_prob_beats_control=0.95 if prob_raw is None else prob_raw,
+                max_expected_loss=0.001 if loss_raw is None else loss_raw,
+            )
+        else:
+            thresholds = None
         decision_policy = DecisionPolicy(
             enabled=enabled,
             thresholds=thresholds,
             source="decision_policy",
         )
-    elif threshold_payload is not None:
+    elif threshold_payload is not None and method == "bayesian":
         decision_policy = DecisionPolicy(
             enabled=True,
             thresholds=DecisionThresholds(**threshold_payload),
@@ -548,14 +548,22 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     )
 
     input_interpretation = dict(inp.input_interpretation)
+    data_risk_flags: list[str] = []
+    if not srm_result.passed:
+        data_risk_flags.append("srm_detected")
+    if not guardrails_passed:
+        global_failed = any(g.variant is None and not g.passed for g in guardrail_results)
+        blocked = {g.variant for g in guardrail_results if g.variant is not None and not g.passed}
+        all_blocked = len(blocked) >= len(comparisons)
+        if global_failed or all_blocked or not blocked:
+            data_risk_flags.append("guardrail_failure")
+        else:
+            data_risk_flags.append("some_variants_guardrail_failure")
+
     if cuped_diag is not None:
         input_interpretation["cuped"] = cuped_diag
-        if (
-            cuped_diag.get("covariate_imbalanced")
-            and recommendation is not None
-            and "covariate_imbalance" not in recommendation.risk_flags
-        ):
-            recommendation.risk_flags.append("covariate_imbalance")
+        if cuped_diag.get("covariate_imbalanced"):
+            data_risk_flags.append("covariate_imbalance")
 
     if inp.primary_metric == "arpu":
         tail_diag = input_interpretation.get("arpu_tail_diagnostics")
@@ -572,21 +580,29 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
                 ]
             )
             input_interpretation["arpu_tail_diagnostics"] = tail_diag
-        if (
-            tail_diag.get("heavy_tailed")
-            and recommendation is not None
-            and "heavy_tailed_revenue" not in recommendation.risk_flags
-        ):
-            recommendation.risk_flags.append("heavy_tailed_revenue")
+        if tail_diag.get("heavy_tailed"):
+            data_risk_flags.append("heavy_tailed_revenue")
 
     if (
-        recommendation is not None
-        and inp.method == "fixed"
+        inp.method == "fixed"
         and inp.primary_metric == "conversion_rate"
         and cuped_arms is None
         and any(_is_sparse_table(control, t) for t in treatments)
     ):
-        recommendation.risk_flags.append("sparse_conversions")
+        data_risk_flags.append("sparse_conversions")
+
+    if recommendation is not None:
+        for flag in data_risk_flags:
+            if flag == "some_variants_guardrail_failure" and (
+                "other_variant_guardrail_failure" in recommendation.risk_flags
+                or "guardrail_failure" in recommendation.risk_flags
+            ):
+                continue
+            if flag not in recommendation.risk_flags:
+                recommendation.risk_flags.append(flag)
+        top_risk_flags = list(recommendation.risk_flags)
+    else:
+        top_risk_flags = data_risk_flags
 
     return AnalysisResult(
         experiment_name=inp.experiment_name,
@@ -600,6 +616,7 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
         recommendation=recommendation,
         bayesian_arms=bayesian_arms,
         secondary_metrics=secondary_results,
+        risk_flags=top_risk_flags,
     )
 
 
@@ -1920,6 +1937,11 @@ def recommend(
     *,
     guardrails: list[GuardrailResult] | None = None,
 ) -> Recommendation | None:
+    if not inp.decision_policy.enabled:
+        return None
+    if inp.method == "bayesian" and inp.decision_policy.thresholds is None:
+        return None
+
     risk_flags: list[str] = []
     if not srm.passed:
         risk_flags.append("srm_detected")
@@ -1972,9 +1994,7 @@ def recommend(
     )
 
     if inp.method == "bayesian":
-        if not inp.decision_policy.enabled or inp.decision_policy.thresholds is None:
-            return None
-
+        assert inp.decision_policy.thresholds is not None
         prob_threshold = inp.decision_policy.thresholds.bayes_prob_beats_control
         loss_threshold = inp.decision_policy.thresholds.max_expected_loss
 

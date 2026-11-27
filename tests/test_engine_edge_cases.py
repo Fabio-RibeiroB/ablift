@@ -36,6 +36,10 @@ def var(name, visitors, conversions=0, control=False, rev=None, sq=None):
 def build(variants, **kw):
     payload = {"variants": variants, "samples": 3000}
     payload.update(kw)
+    # Recommendations are opt-in; these tests exercise the sequential/fixed
+    # recommendation logic, so opt in unless a test sets its own policy.
+    if payload.get("method", "bayesian") != "bayesian":
+        payload.setdefault("decision_policy", {"enabled": True})
     return parse_payload(payload)
 
 
@@ -310,8 +314,17 @@ class SrmBehaviour(unittest.TestCase):
     def test_uneven_split_70_30_flagged(self):
         res = run([var("control", 70_000, 2800, True), var("v1", 30_000, 1200)])
         self.assertFalse(res.srm.passed)
+        self.assertIsNone(res.recommendation)
+        self.assertIn("srm_detected", res.risk_flags)
+
+    def test_srm_with_opt_in_recommends_investigation(self):
+        res = run(
+            [var("control", 70_000, 2800, True), var("v1", 30_000, 1200)],
+            decision_policy={"enabled": True},
+        )
         self.assertEqual(res.recommendation.action, "investigate_data_quality")
         self.assertIn("srm_detected", res.recommendation.risk_flags)
+        self.assertEqual(res.risk_flags, res.recommendation.risk_flags)
 
     def test_srm_assumes_equal_split_documented(self):
         # An intentional 90/10 rollout is indistinguishable from an SRM here: the check
@@ -719,9 +732,23 @@ class GuardrailTests(unittest.TestCase):
         self.assertIn("guardrail_failure", res.recommendation.risk_flags)
         self.assertEqual(res.recommendation.decision_confidence, 1.0)
 
-    def test_guardrail_failure_applies_to_bayesian_even_without_policy(self):
+    def test_guardrail_failure_without_policy_is_a_risk_flag_not_a_recommendation(self):
+        for method in ("bayesian", "sequential", "fixed"):
+            with self.subTest(method=method):
+                res = run(
+                    two_arm(4000, 4500),
+                    method=method,
+                    decision_policy={"enabled": False},
+                    guardrails=[{"name": "g", "control": 1, "treatment": 2}],
+                )
+                self.assertIsNone(res.recommendation)
+                self.assertFalse(res.guardrails_passed)
+                self.assertEqual(res.risk_flags, ["guardrail_failure"])
+
+    def test_guardrail_failure_applies_to_bayesian_with_policy(self):
         res = run(
             two_arm(4000, 4500),
+            decision_policy={"enabled": True},
             guardrails=[{"name": "g", "control": 1, "treatment": 2}],
         )
         self.assertEqual(res.recommendation.action, "do_not_ship")
@@ -729,6 +756,7 @@ class GuardrailTests(unittest.TestCase):
     def test_srm_overrides_guardrail(self):
         res = run(
             [var("control", 70_000, 2800, True), var("v1", 30_000, 1500)],
+            decision_policy={"enabled": True},
             guardrails=[{"name": "g", "control": 1, "treatment": 5}],
         )
         self.assertEqual(res.recommendation.action, "investigate_data_quality")

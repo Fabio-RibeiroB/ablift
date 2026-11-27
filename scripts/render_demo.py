@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs" / "demo.svg"
 INPUT = "examples/checkout_test.csv"
 ARGS = ["analyze", "--input", INPUT, "--method", "sequential"]
-JQ_FILTER = ".recommendation | {action, decision_confidence, rationale}"
+JQ_FILTER = "[.comparisons[] | {treatment, relative_lift, p_value, significant}]"
 
 
 @contextmanager
@@ -36,10 +36,12 @@ def _cwd(path: Path):
         os.chdir(previous)
 
 
-def _jq_equivalent(result: dict) -> dict:
+def _jq_equivalent(result: dict) -> list[dict]:
     """Python equivalent of JQ_FILTER, so the image shows exactly what jq would print."""
-    rec = result["recommendation"]
-    return {k: rec[k] for k in ("action", "decision_confidence", "rationale")}
+    return [
+        {k: comp[k] for k in ("treatment", "relative_lift", "p_value", "significant")}
+        for comp in result["comparisons"]
+    ]
 
 
 def _prompt(command: str, continuation: str | None = None) -> Text:
