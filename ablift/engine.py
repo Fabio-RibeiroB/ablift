@@ -83,6 +83,7 @@ def _parse_payload(payload: dict) -> AnalysisInput:
         random_seed=payload.get("random_seed", 7),
         samples=payload.get("samples", 50000),
         input_interpretation=payload.get("input_interpretation", {}),
+        expected_split=payload.get("expected_split"),
     )
 
 
@@ -105,6 +106,8 @@ def validate_input(inp: AnalysisInput) -> None:
                 "This usually means the success metric is not binary per denominator unit "
                 "(for example total clicks per visit instead of visits with at least one click)."
             )
+
+    resolve_expected_proportions(inp.variants, inp.expected_split)
 
     if inp.alpha <= 0 or inp.alpha >= 1:
         raise ValueError("alpha must be in (0, 1).")
@@ -145,7 +148,7 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
 
     guardrail_results = evaluate_guardrails(inp)
     guardrails_passed = all(g.passed for g in guardrail_results)
-    srm_result = evaluate_srm(inp.variants)
+    srm_result = evaluate_srm(inp.variants, expected_split=inp.expected_split)
 
     if inp.method == "bayesian":
         if inp.primary_metric == "conversion_rate":
@@ -173,6 +176,92 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     )
 
 
+def _validate_weight(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a positive number, got {value!r}.")
+    weight = float(value)
+    if not math.isfinite(weight) or weight <= 0:
+        raise ValueError(f"{label} must be a finite positive number, got {value!r}.")
+    return weight
+
+
+def resolve_expected_proportions(
+    variants: list[VariantInput],
+    expected_split: list[float] | dict[str, float] | None = None,
+) -> list[float]:
+    """Resolve and normalize expected traffic allocation proportions across variants."""
+    if not variants:
+        raise ValueError("At least 2 variants are required.")
+
+    has_share = [v.expected_share is not None for v in variants]
+    if expected_split is not None and any(has_share):
+        raise ValueError(
+            "Cannot specify both top-level 'expected_split' and per-variant 'expected_share'. "
+            "Use only one."
+        )
+
+    weights: list[float]
+    if any(has_share):
+        if not all(has_share):
+            missing = [v.name for v in variants if v.expected_share is None]
+            raise ValueError(
+                "expected_share must be set on all variants or none; "
+                f"missing for: {', '.join(missing)}."
+            )
+        weights = [
+            _validate_weight(v.expected_share, f"expected_share for variant '{v.name}'")
+            for v in variants
+        ]
+    elif expected_split is not None:
+        if isinstance(expected_split, list):
+            if len(expected_split) != len(variants):
+                raise ValueError(
+                    f"expected_split length ({len(expected_split)}) must match "
+                    f"number of variants ({len(variants)})."
+                )
+            weights = [
+                _validate_weight(w, f"expected_split[{i}]") for i, w in enumerate(expected_split)
+            ]
+        elif isinstance(expected_split, dict):
+            variant_names = [v.name for v in variants]
+            if len(set(variant_names)) != len(variant_names):
+                raise ValueError(
+                    "expected_split mapping cannot be used when variant names are not unique."
+                )
+            variant_set = set(variant_names)
+            expected_keys = set(expected_split.keys())
+            unknown = sorted(str(k) for k in expected_keys - variant_set)
+            if unknown:
+                raise ValueError(
+                    f"expected_split contains unknown variant name(s): {', '.join(unknown)}. "
+                    f"Expected: {', '.join(variant_names)}."
+                )
+            missing = [name for name in variant_names if name not in expected_split]
+            if missing:
+                raise ValueError(f"expected_split is missing variant(s): {', '.join(missing)}.")
+            weights = [
+                _validate_weight(expected_split[v.name], f"expected_split[{v.name!r}]")
+                for v in variants
+            ]
+        else:
+            raise ValueError(
+                "expected_split must be a list of positive weights or a mapping of "
+                "variant names to positive weights."
+            )
+    else:
+        k = len(variants)
+        return [1.0 / k for _ in range(k)]
+
+    total_weight = sum(weights)
+    if not math.isfinite(total_weight) or total_weight <= 0:
+        raise ValueError("expected_split weights sum must be finite and positive.")
+
+    proportions = [w / total_weight for w in weights]
+    if any(not math.isfinite(p) or p <= 0 for p in proportions):
+        raise ValueError("Normalized expected proportions must all be finite and positive.")
+    return proportions
+
+
 def chi2_survival(x: float, df: int) -> float:
     """Exact upper-tail probability of a chi-square distribution with integer ``df``."""
     if x <= 0:
@@ -187,14 +276,18 @@ def chi2_survival(x: float, df: int) -> float:
     return min(1.0, tail + sum(math.exp(t - half) for t in terms))
 
 
-def evaluate_srm(variants: list[VariantInput]) -> SrmResult:
+def evaluate_srm(
+    variants: list[VariantInput],
+    expected_split: list[float] | dict[str, float] | None = None,
+) -> SrmResult:
+    proportions = resolve_expected_proportions(variants, expected_split)
     observed = [v.visitors for v in variants]
     total = float(sum(observed))
     k = len(observed)
-    expected = [total / k for _ in range(k)]
+    expected = [total * p for p in proportions]
 
     chi2 = 0.0
-    for obs, exp in zip(observed, expected, strict=False):
+    for obs, exp in zip(observed, expected, strict=True):
         if exp > 0:
             chi2 += ((obs - exp) ** 2) / exp
 
@@ -207,6 +300,7 @@ def evaluate_srm(variants: list[VariantInput]) -> SrmResult:
         p_value=float(max(min(p_value, 1.0), 0.0)),
         observed=observed,
         expected=expected,
+        expected_proportions=proportions,
         reason=reason,
     )
 

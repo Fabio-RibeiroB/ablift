@@ -242,7 +242,17 @@ class GuardrailAndSrmSectionTests(unittest.TestCase):
         report = build_markdown_report(result)
         self.assertIn("- SRM passed: `True`", report)
         self.assertIn(f"- SRM p-value: {result.srm.p_value:.6f}", report)
+        self.assertIn("- SRM expected proportions: 50.000%, 50.000%", report)
         self.assertIn(f"- SRM reason: {result.srm.reason}", report)
+
+    def test_srm_section_shows_configured_unequal_proportions(self):
+        report = _report(
+            method="sequential",
+            expected_split=[0.9, 0.1],
+            variants=_variants(("control", 90000, 3600), ("v1", 10000, 460)),
+        )
+        self.assertIn("- SRM passed: `True`", report)
+        self.assertIn("- SRM expected proportions: 90.000%, 10.000%", report)
 
     def test_srm_perfectly_balanced_has_p_value_one(self):
         # Regression (was a bug): ablift/engine.py:evaluate_srm uses a Wilson-Hilferty approximation that

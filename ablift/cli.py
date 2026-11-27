@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import math
 import sys
 import tomllib
 from pathlib import Path
@@ -30,6 +31,7 @@ ANALYZE_EPILOG = """\b
 Examples:
   ablift analyze --input experiment.json
   ablift analyze --input experiment.csv
+  ablift analyze --input experiment.csv --expected-split 0.9,0.1
   ablift analyze --input experiment.xlsx --sheet Results
   ablift analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
   ablift analyze --input experiment.json --report report.md
@@ -54,14 +56,83 @@ def _emit_analysis(result, output_path: str | None, report_path: str | None) -> 
         _write_text(report_path, build_markdown_report(result))
 
 
+_ATOMIC_MERGE_KEYS = {"expected_split"}
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+        if (
+            key not in _ATOMIC_MERGE_KEYS
+            and isinstance(value, dict)
+            and isinstance(merged.get(key), dict)
+        ):
             merged[key] = _deep_merge(merged[key], value)
         elif value is not None:
             merged[key] = value
     return merged
+
+
+def _parse_expected_split_option(raw: str) -> list[float] | dict[str, float]:
+    """Parse --expected-split into a list of weights or a variant-name mapping."""
+    text = raw.strip()
+    if not text:
+        raise ValueError("--expected-split cannot be empty.")
+
+    parts = [part.strip() for part in text.split(",")]
+    if any(not part for part in parts):
+        raise ValueError(f"Malformed --expected-split {raw!r}: empty entry between commas.")
+
+    has_eq = ["=" in part for part in parts]
+    if any(has_eq) and not all(has_eq):
+        raise ValueError(
+            f"Malformed --expected-split {raw!r}: cannot mix positional weights and name=weight pairs."
+        )
+
+    if all(has_eq):
+        mapping: dict[str, float] = {}
+        for part in parts:
+            pieces = part.split("=")
+            if len(pieces) != 2:
+                raise ValueError(
+                    f"Malformed --expected-split entry {part!r}: expected 'name=weight'."
+                )
+            name, weight_str = pieces[0].strip(), pieces[1].strip()
+            if not name or not weight_str:
+                raise ValueError(
+                    f"Malformed --expected-split entry {part!r}: expected 'name=weight'."
+                )
+            if name in mapping:
+                raise ValueError(f"Duplicate variant name {name!r} in --expected-split.")
+            try:
+                weight = float(weight_str)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid weight {weight_str!r} for variant {name!r} in --expected-split: "
+                    "must be numeric."
+                ) from None
+            if not math.isfinite(weight) or weight <= 0:
+                raise ValueError(
+                    f"Invalid weight {weight_str!r} for variant {name!r} in --expected-split: "
+                    "must be a finite positive number."
+                )
+            mapping[name] = weight
+        return mapping
+
+    weights: list[float] = []
+    for part in parts:
+        try:
+            weight = float(part)
+        except ValueError:
+            raise ValueError(
+                f"Invalid weight {part!r} in --expected-split: must be numeric."
+            ) from None
+        if not math.isfinite(weight) or weight <= 0:
+            raise ValueError(
+                f"Invalid weight {part!r} in --expected-split: must be a finite positive number."
+            )
+        weights.append(weight)
+    return weights
 
 
 def _load_project_config() -> dict[str, Any]:
@@ -99,7 +170,27 @@ def _merge_json_payload(
 ) -> dict[str, Any]:
     if not isinstance(input_payload, dict):
         raise ValueError("JSON input must be an object with a 'variants' list.")
-    payload = _deep_merge(config_payload, _deep_merge(input_payload, defaults))
+
+    input_variants = input_payload.get("variants")
+    input_has_shares = isinstance(input_variants, list) and any(
+        isinstance(row, dict) and row.get("expected_share") is not None for row in input_variants
+    )
+    effective_config = config_payload
+    if (
+        input_has_shares
+        and input_payload.get("expected_split") is None
+        and "expected_split" in config_payload
+    ):
+        effective_config = {k: v for k, v in config_payload.items() if k != "expected_split"}
+
+    payload = _deep_merge(effective_config, _deep_merge(input_payload, defaults))
+    if defaults.get("expected_split") is not None and isinstance(payload.get("variants"), list):
+        payload["variants"] = [
+            {k: v for k, v in row.items() if k != "expected_share"}
+            if isinstance(row, dict)
+            else row
+            for row in payload["variants"]
+        ]
     payload.setdefault("input_interpretation", {"source_type": "json"})
     return payload
 
@@ -323,6 +414,15 @@ def cli() -> None:
     "--random-seed", type=int, default=None, help="Optional Bayesian random seed override."
 )
 @click.option(
+    "--expected-split",
+    type=str,
+    default=None,
+    help=(
+        "Expected traffic split weights for SRM check, as comma-separated numbers "
+        "(e.g. '0.9,0.1' or '90,10') or name=weight pairs (e.g. 'control=0.8,v1=0.2')."
+    ),
+)
+@click.option(
     "--output",
     "output_path",
     required=False,
@@ -350,6 +450,7 @@ def analyze(
     sequential_tau: float | None,
     samples: int | None,
     random_seed: int | None,
+    expected_split: str | None,
     output_path: str | None,
     report_path: str | None,
 ) -> None:
@@ -368,6 +469,13 @@ def analyze(
             "max_expected_loss": max_expected_loss,
         }
 
+    parsed_expected_split = None
+    if expected_split is not None:
+        try:
+            parsed_expected_split = _parse_expected_split_option(expected_split)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
     defaults = {
         "experiment_name": experiment_name,
         "method": method,
@@ -377,6 +485,7 @@ def analyze(
         "sequential_tau": sequential_tau,
         "samples": samples,
         "random_seed": random_seed,
+        "expected_split": parsed_expected_split,
     }
     try:
         input_payload = _load_analysis_payload(

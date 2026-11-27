@@ -12,6 +12,7 @@ class VariantInput:
     revenue_sum: float | None = None
     revenue_sum_squares: float | None = None
     is_control: bool = False
+    expected_share: float | None = None
 
 
 @dataclass
@@ -49,6 +50,7 @@ class AnalysisInput:
     random_seed: int = 7
     samples: int = 50000
     input_interpretation: dict[str, Any] = field(default_factory=dict)
+    expected_split: list[float] | dict[str, float] | None = None
 
 
 @dataclass
@@ -112,6 +114,7 @@ class SrmResult:
     p_value: float
     observed: list[int]
     expected: list[float]
+    expected_proportions: list[float]
     reason: str
 
 

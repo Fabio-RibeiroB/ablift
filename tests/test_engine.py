@@ -2,7 +2,7 @@ import math
 import unittest
 
 import numpy as np
-from scipy.stats import chi2
+from scipy.stats import chi2, chisquare
 from statsmodels.stats.proportion import proportions_ztest
 
 from ablift.engine import (
@@ -170,6 +170,50 @@ class EngineTests(unittest.TestCase):
 
         self.assertAlmostEqual(result.p_value, expected_p_value, places=4)
         self.assertEqual(result.passed, expected_p_value >= 0.001)
+        self.assertEqual(result.expected_proportions, [0.5, 0.5])
+
+    def test_srm_unequal_splits_match_scipy_chisquare(self):
+        cases = [
+            # 2-arm 90/10 matching
+            ([("control", 9012), ("v1", 988)], [0.9, 0.1], True),
+            # 2-arm 90/10 skewed (passes weights in percentage scale)
+            ([("control", 8500), ("v1", 1500)], [90, 10], False),
+            # 3-arm 50/25/25 matching
+            ([("control", 5020), ("v1", 2495), ("v2", 2485)], [0.5, 0.25, 0.25], True),
+            # 3-arm 50/25/25 skewed
+            ([("control", 5000), ("v1", 2800), ("v2", 2200)], [50, 25, 25], False),
+            # 4-arm 40/30/20/10 matching
+            (
+                [("control", 4010), ("v1", 2985), ("v2", 2015), ("v3", 990)],
+                [40, 30, 20, 10],
+                True,
+            ),
+            # 4-arm 40/30/20/10 skewed
+            (
+                [("control", 4200), ("v1", 3000), ("v2", 2000), ("v3", 800)],
+                [0.4, 0.3, 0.2, 0.1],
+                False,
+            ),
+        ]
+        for arm_counts, weights, should_pass in cases:
+            with self.subTest(arm_counts=arm_counts, weights=weights):
+                variants = [
+                    VariantInput(name=name, visitors=n, conversions=0, is_control=(i == 0))
+                    for i, (name, n) in enumerate(arm_counts)
+                ]
+                result = evaluate_srm(variants, expected_split=weights)
+                total = sum(n for _, n in arm_counts)
+                weight_sum = sum(weights)
+                proportions = [w / weight_sum for w in weights]
+                expected_counts = [total * p for p in proportions]
+                scipy_res = chisquare([n for _, n in arm_counts], f_exp=expected_counts)
+
+                self.assertAlmostEqual(result.p_value, float(scipy_res.pvalue), places=10)
+                self.assertEqual(result.passed, should_pass)
+                for got_p, exp_p in zip(result.expected_proportions, proportions, strict=True):
+                    self.assertAlmostEqual(got_p, exp_p, places=12)
+                for got_e, exp_e in zip(result.expected, expected_counts, strict=True):
+                    self.assertAlmostEqual(got_e, exp_e, places=9)
 
     def test_two_proportion_test_matches_statsmodels(self):
         x1, n1 = 500, 10_000
