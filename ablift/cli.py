@@ -627,6 +627,8 @@ def analyze(
     except (ValueError, KeyError, json.JSONDecodeError) as exc:
         source = "stdin" if input_path == "-" else input_path
         raise click.ClickException(f"Could not read {source}: {exc}") from exc
+    except MemoryError as exc:
+        raise click.ClickException(_OUT_OF_MEMORY) from exc
 
     effective_method = str(input_payload.get("method") or "bayesian")
     _validate_fixed_method_flags(
@@ -644,6 +646,14 @@ def analyze(
         _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    except MemoryError as exc:
+        raise click.ClickException(_OUT_OF_MEMORY) from exc
+
+
+_OUT_OF_MEMORY = (
+    "Ran out of memory. Lower --samples or --bootstrap-samples, or pass aggregated "
+    "per-variant sums instead of row-level data."
+)
 
 
 DURATION_EPILOG = """\b
@@ -963,6 +973,8 @@ def duration(
                 )
     except (ValueError, json.JSONDecodeError) as exc:
         raise click.ClickException(str(exc)) from exc
+    except MemoryError as exc:
+        raise click.ClickException(_OUT_OF_MEMORY) from exc
 
     plan_json = json.dumps(
         {
