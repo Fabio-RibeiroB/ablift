@@ -13,6 +13,11 @@ class VariantInput:
     revenue_sum_squares: float | None = None
     is_control: bool = False
     expected_share: float | None = None
+    numerator_sum: float | None = None
+    numerator_sum_squares: float | None = None
+    denominator_sum: float | None = None
+    denominator_sum_squares: float | None = None
+    numerator_denominator_sum: float | None = None
 
 
 @dataclass

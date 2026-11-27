@@ -194,11 +194,26 @@ def _reject_misplaced_control_column(rows: list[dict[str, Any]], value_positions
             )
 
 
-def detect_input_shape(rows: list[dict[str, Any]]) -> str:
+def _to_finite_float(value: Any, field_name: str) -> float:
+    if value is None or value == "":
+        raise ValueError(f"Missing required numeric field '{field_name}'.")
+    if isinstance(value, bool):
+        raise ValueError(f"Column '{field_name}' must be numeric, got {value!r}.")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Column '{field_name}' must be numeric, got {value!r}.") from None
+    if not math.isfinite(number):
+        raise ValueError(f"Column '{field_name}' must be finite, got {value!r}.")
+    return number
+
+
+def detect_input_shape(rows: list[dict[str, Any]], primary_metric: str | None = None) -> str:
     """Return 'row_level' or 'aggregated' for a positional table.
 
     Repeated variant names mean row-level data, whose layout must be
-    ``name, outcome [, is_control]``. A table with repeated names and more columns than that
+    ``name, outcome [, is_control]`` (or ``name, numerator, denominator [, is_control]``
+    when ``primary_metric == 'ratio'``). A table with repeated names and more columns than that
     is an aggregated table with duplicate rows, which is rejected rather than misread.
     """
     if not rows:
@@ -208,6 +223,22 @@ def detect_input_shape(rows: list[dict[str, Any]]) -> str:
     names = [n for n in names if n]
     if not names:
         raise ValueError("Input has no variant data: the first column (variant name) is empty.")
+    if primary_metric == "ratio":
+        _reject_misplaced_control_column(rows, value_positions=2)
+        if len(set(names)) == len(names):
+            return "aggregated"
+        control_col = _find_control_column(rows, skip_cols=3)
+        data_cols = [c for c in cols if c != control_col]
+        if len(data_cols) == 3:
+            return "row_level"
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        raise ValueError(
+            f"Variant name(s) {', '.join(duplicates)} appear in more than one row, but the table "
+            f"has {len(data_cols) - 1} value columns. Row-level ratio input must be exactly: "
+            "name, numerator, denominator [, is_control]. For aggregated ratio input, combine rows "
+            "so each variant appears once.\n" + AGGREGATED_LAYOUT_HELP
+        )
+
     _reject_misplaced_control_column(rows, value_positions=1)
     if len(set(names)) == len(names):
         return "aggregated"
@@ -225,10 +256,92 @@ def detect_input_shape(rows: list[dict[str, Any]]) -> str:
     )
 
 
+def _build_payload_from_ratio_row_level(
+    rows: list[dict[str, Any]], defaults: dict[str, Any]
+) -> dict[str, Any]:
+    cols = list(rows[0].keys())
+    if len(cols) < 3:
+        raise ValueError(
+            "Row-level ratio input requires at least 3 columns: variant name, numerator, denominator."
+        )
+    variant_col = cols[0]
+    num_col = cols[1]
+    den_col = cols[2]
+    control_col = _find_control_column(rows, skip_cols=3)
+    data_cols = [c for c in cols if c != control_col]
+    if len(data_cols) != 3:
+        raise ValueError(
+            "Row-level ratio input must have layout: name, numerator, denominator [, is_control]."
+        )
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        name = str(row.get(variant_col, "")).strip()
+        if not name:
+            continue
+        groups.setdefault(name, []).append(row)
+
+    if not groups:
+        raise ValueError("Row-level input has no variant data.")
+
+    first_variant = next(iter(groups))
+    variants: list[dict[str, Any]] = []
+    for name, group_rows in groups.items():
+        if control_col:
+            is_ctrl = any(_to_bool(r.get(control_col)) for r in group_rows)
+        else:
+            is_ctrl = name == first_variant
+
+        num_sum = 0.0
+        num_sum_sq = 0.0
+        den_sum = 0.0
+        den_sum_sq = 0.0
+        num_den_sum = 0.0
+        for row in group_rows:
+            num = _to_finite_float(row.get(num_col), num_col)
+            den = _to_finite_float(row.get(den_col), den_col)
+            if den < 0.0:
+                raise ValueError(
+                    f"Variant {name!r}: denominator column '{den_col}' cannot be negative "
+                    f"(got {den!r})."
+                )
+            num_sum += num
+            num_sum_sq += num * num
+            den_sum += den
+            den_sum_sq += den * den
+            num_den_sum += num * den
+
+        variants.append(
+            {
+                "name": name,
+                "is_control": is_ctrl,
+                "visitors": len(group_rows),
+                "numerator_sum": num_sum,
+                "numerator_sum_squares": num_sum_sq,
+                "denominator_sum": den_sum,
+                "denominator_sum_squares": den_sum_sq,
+                "numerator_denominator_sum": num_den_sum,
+            }
+        )
+
+    column_roles: dict[str, str] = {
+        "variant": variant_col,
+        "numerator": num_col,
+        "denominator": den_col,
+    }
+    if control_col:
+        column_roles["is_control"] = control_col
+    return _build_final_payload(
+        variants, "ratio", defaults, source_type="row_level", column_roles=column_roles
+    )
+
+
 def _build_payload_from_row_level(
     rows: list[dict[str, Any]], defaults: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     defaults = defaults or {}
+    if defaults.get("primary_metric") == "ratio":
+        return _build_payload_from_ratio_row_level(rows, defaults)
     cols = list(rows[0].keys())
     if len(cols) < 2:
         raise ValueError("Row-level input requires at least 2 columns: variant name and outcome.")
@@ -294,7 +407,9 @@ AGGREGATED_LAYOUT_HELP = (
     "Aggregated input layouts (one row per variant, columns by position):\n"
     "  name, visitors, conversions [, is_control]\n"
     "  name, visitors, revenue_sum, revenue_sum_squares [, is_control]\n"
-    "  name, visitors, conversions, revenue_sum, revenue_sum_squares [, is_control]"
+    "  name, visitors, conversions, revenue_sum, revenue_sum_squares [, is_control]\n"
+    "  name, visitors, numerator_sum, numerator_sum_squares, denominator_sum, "
+    "denominator_sum_squares, numerator_denominator_sum [, is_control]"
 )
 
 
@@ -316,6 +431,7 @@ def _build_payload_from_aggregated(
 
     conversions_col: str | None = None
     revenue_cols: tuple[str, str] | None = None
+    ratio_cols: tuple[str, str, str, str, str] | None = None
     if len(metric_cols) == 1:
         conversions_col = metric_cols[0]
         for row in rows:
@@ -334,6 +450,14 @@ def _build_payload_from_aggregated(
     elif len(metric_cols) == 3:
         conversions_col = metric_cols[0]
         revenue_cols = (metric_cols[1], metric_cols[2])
+    elif len(metric_cols) == 5:
+        ratio_cols = (
+            metric_cols[0],
+            metric_cols[1],
+            metric_cols[2],
+            metric_cols[3],
+            metric_cols[4],
+        )
     else:
         col_list = ", ".join(str(c) for c in metric_cols)
         raise ValueError(
@@ -341,9 +465,12 @@ def _build_payload_from_aggregated(
             + AGGREGATED_LAYOUT_HELP
         )
 
-    primary_metric = defaults.get("primary_metric") or (
-        "arpu" if revenue_cols is not None else "conversion_rate"
+    inferred_metric = (
+        "ratio"
+        if ratio_cols is not None
+        else ("arpu" if revenue_cols is not None else "conversion_rate")
     )
+    primary_metric = defaults.get("primary_metric") or inferred_metric
     if primary_metric == "arpu" and revenue_cols is None:
         raise ValueError(
             "primary_metric 'arpu' needs revenue_sum and revenue_sum_squares columns.\n"
@@ -352,6 +479,12 @@ def _build_payload_from_aggregated(
     if primary_metric == "conversion_rate" and conversions_col is None:
         raise ValueError(
             "primary_metric 'conversion_rate' needs a conversions column.\n"
+            + AGGREGATED_LAYOUT_HELP
+        )
+    if primary_metric == "ratio" and ratio_cols is None:
+        raise ValueError(
+            "primary_metric 'ratio' needs numerator_sum, numerator_sum_squares, denominator_sum, "
+            "denominator_sum_squares, and numerator_denominator_sum columns.\n"
             + AGGREGATED_LAYOUT_HELP
         )
 
@@ -378,6 +511,18 @@ def _build_payload_from_aggregated(
             variant_obj["revenue_sum_squares"] = _to_float_or_none(
                 row.get(revenue_cols[1]), revenue_cols[1]
             )
+        if ratio_cols is not None:
+            variant_obj["numerator_sum"] = _to_finite_float(row.get(ratio_cols[0]), ratio_cols[0])
+            variant_obj["numerator_sum_squares"] = _to_finite_float(
+                row.get(ratio_cols[1]), ratio_cols[1]
+            )
+            variant_obj["denominator_sum"] = _to_finite_float(row.get(ratio_cols[2]), ratio_cols[2])
+            variant_obj["denominator_sum_squares"] = _to_finite_float(
+                row.get(ratio_cols[3]), ratio_cols[3]
+            )
+            variant_obj["numerator_denominator_sum"] = _to_finite_float(
+                row.get(ratio_cols[4]), ratio_cols[4]
+            )
         variants.append(variant_obj)
 
     column_roles: dict[str, str] = {"variant": variant_col, "visitors": visitors_col}
@@ -386,6 +531,12 @@ def _build_payload_from_aggregated(
     if revenue_cols:
         column_roles["revenue_sum"] = revenue_cols[0]
         column_roles["revenue_sum_squares"] = revenue_cols[1]
+    if ratio_cols:
+        column_roles["numerator_sum"] = ratio_cols[0]
+        column_roles["numerator_sum_squares"] = ratio_cols[1]
+        column_roles["denominator_sum"] = ratio_cols[2]
+        column_roles["denominator_sum_squares"] = ratio_cols[3]
+        column_roles["numerator_denominator_sum"] = ratio_cols[4]
     if control_col:
         column_roles["is_control"] = control_col
 
@@ -426,7 +577,8 @@ def build_payload_from_rows(
     rows: list[dict[str, Any]],
     defaults: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    shape = detect_input_shape(rows)
+    primary_metric = (defaults or {}).get("primary_metric")
+    shape = detect_input_shape(rows, primary_metric=primary_metric)
     if shape == "row_level":
         return _build_payload_from_row_level(rows, defaults)
     return _build_payload_from_aggregated(rows, defaults)

@@ -442,7 +442,7 @@ def cli() -> None:
 )
 @click.option(
     "--primary-metric",
-    type=click.Choice(["conversion_rate", "arpu"]),
+    type=click.Choice(["conversion_rate", "arpu", "ratio"]),
     default=None,
     help="Optional primary metric override (applies to JSON, CSV/XLSX, and stdin inputs).",
 )
