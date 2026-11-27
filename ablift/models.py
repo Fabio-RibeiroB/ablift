@@ -18,10 +18,19 @@ class VariantInput:
 @dataclass
 class GuardrailInput:
     name: str
-    control: float
-    treatment: float
+    control: float | None = None
+    treatment: float | None = None
     direction: str = "decrease"
     max_relative_change: float = 0.0
+    metric: str | None = None
+    variants: list[VariantInput] | None = None
+
+
+@dataclass
+class SecondaryMetricInput:
+    name: str
+    metric: str
+    variants: list[VariantInput]
 
 
 @dataclass
@@ -46,6 +55,7 @@ class AnalysisInput:
     alpha: float = 0.05
     sequential_tau: float | None = None
     guardrails: list[GuardrailInput] = field(default_factory=list)
+    secondary_metrics: list[SecondaryMetricInput] = field(default_factory=list)
     decision_policy: DecisionPolicy = field(default_factory=DecisionPolicy)
     random_seed: int = 7
     samples: int = 50000
@@ -64,18 +74,6 @@ class AnalysisSettings:
     priors: dict[str, Any]
     decision_policy: dict[str, Any]
     input_interpretation: dict[str, Any]
-
-
-@dataclass
-class GuardrailResult:
-    name: str
-    direction: str
-    control: float
-    treatment: float
-    relative_change: float
-    max_relative_change: float
-    passed: bool
-    reason: str
 
 
 @dataclass
@@ -113,6 +111,29 @@ class BayesianArmSummary:
 
 
 @dataclass
+class GuardrailResult:
+    name: str
+    direction: str
+    control: float
+    treatment: float
+    relative_change: float
+    max_relative_change: float
+    passed: bool
+    reason: str
+    variant: str | None = None
+    mode: str = "threshold"
+    comparison: ComparisonResult | None = None
+
+
+@dataclass
+class SecondaryMetricResult:
+    name: str
+    metric: str
+    comparisons: list[ComparisonResult]
+    bayesian_arms: list[BayesianArmSummary] | None = None
+
+
+@dataclass
 class Recommendation:
     action: str
     rationale: str
@@ -146,6 +167,7 @@ class AnalysisResult:
     srm: SrmResult
     recommendation: Recommendation | None
     bayesian_arms: list[BayesianArmSummary] | None = None
+    secondary_metrics: list[SecondaryMetricResult] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, **asdict(self)}

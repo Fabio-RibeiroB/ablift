@@ -94,23 +94,42 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
     return lines
 
 
-def _guardrail_lines(guardrails: list[GuardrailResult]) -> list[str]:
+def _guardrail_lines(guardrails: list[GuardrailResult], method: str) -> list[str]:
     if not guardrails:
         return ["No guardrails provided."]
 
     lines: list[str] = []
     for g in guardrails:
-        lines.extend(
+        header = (
+            f"- `{g.name}` (`{g.variant}`): pass=`{g.passed}`"
+            if g.variant is not None
+            else f"- `{g.name}`: pass=`{g.passed}`"
+        )
+        entry = [header]
+        if g.mode != "threshold":
+            entry.append(f"  - mode: `{g.mode}`")
+        entry.extend(
             [
-                f"- `{g.name}`: pass=`{g.passed}`",
                 f"  - direction: `{g.direction}`",
                 f"  - control: {g.control}",
                 f"  - treatment: {g.treatment}",
                 f"  - relative change: {_fmt_pct(g.relative_change)}",
                 f"  - allowed: {_fmt_pct(g.max_relative_change)}",
-                f"  - reason: {g.reason}",
             ]
         )
+        if g.comparison is not None:
+            comp = g.comparison
+            entry.append(
+                f"  - interval (absolute lift): [{_fmt_float(comp.ci_low)}, {_fmt_float(comp.ci_high)}]"
+            )
+            if method == "bayesian":
+                entry.append(
+                    f"  - P(treatment > control): {_fmt_float(comp.probability_beats_control, 4)}"
+                )
+            else:
+                entry.append(f"  - p-value: {_fmt_float(comp.p_value, 6)}")
+        entry.append(f"  - reason: {g.reason}")
+        lines.extend(entry)
     return lines
 
 
@@ -206,7 +225,15 @@ def build_markdown_report(result: AnalysisResult) -> str:
             )
 
     lines.extend(["", "## Guardrails"])
-    lines.extend(_guardrail_lines(result.guardrails))
+    lines.extend(_guardrail_lines(result.guardrails, result.method))
+
+    if result.secondary_metrics:
+        lines.extend(["", "## Secondary Metrics"])
+        for sec in result.secondary_metrics:
+            lines.extend(["", f"### {sec.name} (`{sec.metric}`)"])
+            for comp in sec.comparisons:
+                lines.extend(_comparison_lines(comp, result.method))
+
     lines.append("")
 
     return "\n".join(lines)

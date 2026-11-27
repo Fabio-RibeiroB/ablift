@@ -15,7 +15,7 @@ It supports:
 - Sequential decisions with mSPRT and always-valid confidence intervals: look as often as you like
 - Fixed-horizon frequentist decisions (`--method fixed`): two-proportion z-test and Welch's t-test (single planned look)
 - Multi-variant (`A/B/n`) comparisons against one control
-- Guardrail checks (latency, bounce rate, error rate, etc.)
+- Per-variant statistical guardrails (plus backwards-compatible threshold guardrails) and secondary metrics in JSON inputs
 - SRM detection (sample ratio mismatch) for data quality
 - Test duration planning (sequential, fixed-horizon, Bayesian assurance)
 - Structured JSON output (versioned with `schema_version`) for agents and automations
@@ -187,7 +187,8 @@ Top-level fields:
 - `sequential_tau` (optional float, sequential mode; default 10% of the control baseline)
 - `variants` (list): exactly one row must include `"is_control": true`
 - `expected_split` (optional): expected traffic allocation weights for the SRM check, either as a list of positive numbers matching `variants` order (e.g. `[0.9, 0.1]` or `[90, 10]`) or an object mapping each variant name to a positive number (e.g. `{"control": 0.8, "v1": 0.2}`). Weights are normalized to sum to `1.0`. Defaults to an equal `1/k` split when omitted. Cannot be combined with per-variant `expected_share`.
-- `guardrails` (optional list)
+- `guardrails` (optional list): supports both **statistical per-variant guardrails** (`metric` + `variants`) and backwards-compatible **threshold guardrails** (`control` + `treatment` floats)
+- `secondary_metrics` (optional list): additional `conversion_rate` or `arpu` metrics evaluated with the same inference method for full-experiment readouts (informational only; never block recommendations)
 - `decision_policy` (optional, Bayesian mode):
   - `enabled` (bool)
   - `bayes_prob_beats_control` (default `0.95`)
@@ -212,10 +213,40 @@ Each variant row also accepts an optional `expected_share` (positive number) for
 
 For `primary_metric: "arpu"`, each variant also needs `revenue_sum` and `revenue_sum_squares`.
 
-Guardrail row (`ablift example-input` prints a full example):
+Guardrails (`ablift example-input` prints a full multi-metric example):
+
+- **Statistical per-variant guardrail** (recommended, especially for A/B/n tests): evaluates each treatment arm against control using the active inference method (`bayesian`, `sequential`, or `fixed`) so noisy small-sample fluctuations do not falsely block shipping, and a guardrail failure on one variant does not block shipping another winning variant. `visitors` and `is_control` are inherited from matching primary `variants` when omitted:
 
 ```json
-{"name": "bounce_rate", "control": 0.36, "treatment": 0.365, "direction": "decrease", "max_relative_change": 0.03}
+{
+  "name": "bounce_rate",
+  "metric": "conversion_rate",
+  "direction": "decrease",
+  "max_relative_change": 0.03,
+  "variants": [
+    {"name": "control", "visitors": 100000, "conversions": 36000},
+    {"name": "treatment_a", "visitors": 100000, "conversions": 36500}
+  ]
+}
+```
+
+- **Simple threshold guardrail** (backwards-compatible deterministic check comparing two point floats):
+
+```json
+{"name": "p95_latency_ms", "control": 420.0, "treatment": 430.0, "direction": "decrease", "max_relative_change": 0.05}
+```
+
+Secondary metric entry (`metric` is `"conversion_rate"` or `"arpu"`; `visitors` and `is_control` default to the matching primary variant):
+
+```json
+{
+  "name": "revenue_per_visitor",
+  "metric": "arpu",
+  "variants": [
+    {"name": "control", "revenue_sum": 480000.0, "revenue_sum_squares": 28800000.0},
+    {"name": "treatment_a", "revenue_sum": 505000.0, "revenue_sum_squares": 30500000.0}
+  ]
+}
 ```
 
 Bayesian conversion-rate example with a decision policy:
@@ -467,6 +498,13 @@ Each entry in `comparisons` has:
 
 `bayesian_arms` (Bayesian mode only; `null` for other methods) is a list covering **every** arm (control and all treatments, in input order) with `variant`, `is_control`, `probability_best` (sums to `1.0` across all arms), and `multi_arm_expected_loss`.
 
+`guardrails` is a list of evaluated guardrail results. Each entry has `name`, `direction`, `control`, `treatment`, `relative_change`, `max_relative_change`, `passed`, `reason`, plus:
+- `mode`: `"statistical"` for per-variant statistical guardrails, `"threshold"` for legacy scalar guardrails
+- `variant`: treatment variant name for statistical guardrails, or `null` for legacy global threshold guardrails
+- `comparison`: full `ComparisonResult` statistical estimate (lift, interval, p-value / posterior probability) for statistical guardrails, or `null` for threshold guardrails
+
+`secondary_metrics` is a list of informational metric readouts (empty list `[]` when omitted), each with `name`, `metric`, `comparisons`, and `bayesian_arms` (Bayesian mode only; `null` otherwise). Secondary metrics never block `recommendation`.
+
 `recommendation` contains:
 - `action` (`ship_<variant>`, `continue_collecting_data`, `do_not_ship`, `investigate_data_quality`, `stop_and_rollback`)
 - `rationale`
@@ -475,22 +513,23 @@ Each entry in `comparisons` has:
 - `risk_flags`
 
 How the Bayesian recommendation is chosen (when an explicit `decision_policy` is enabled):
-- `ship_<variant>`: evaluates every treatment against `absolute_lift > 0`, `probability_beats_control >= bayes_prob_beats_control`, and `expected_loss <= max_expected_loss`; among qualifying winners, picks the Bayes-optimal arm minimizing `multi_arm_expected_loss` (tie-breaking on higher `absolute_lift`), so a noisy arm with a slightly higher point estimate cannot overshadow a qualifying winner.
-- `do_not_ship`: only if every treatment has `absolute_lift < 0` and `probability_beats_control <= 1 - bayes_prob_beats_control`.
-- `continue_collecting_data`: otherwise, with `decision_confidence` set to the leading treatment's `probability_beats_control`.
+- `ship_<variant>`: evaluates every eligible treatment against `absolute_lift > 0`, `probability_beats_control >= bayes_prob_beats_control`, and `expected_loss <= max_expected_loss`; among qualifying winners, picks the Bayes-optimal arm minimizing `multi_arm_expected_loss` (tie-breaking on higher `absolute_lift`), so a noisy arm with a slightly higher point estimate cannot overshadow a qualifying winner.
+- `do_not_ship`: only if every eligible treatment has `absolute_lift < 0` and `probability_beats_control <= 1 - bayes_prob_beats_control`.
+- `continue_collecting_data`: otherwise, with `decision_confidence` set to the leading eligible treatment's `probability_beats_control`.
 
 How the sequential recommendation is chosen:
-- `ship_<variant>`: the best significantly positive variant, even if others are not significant. `decision_confidence = 1 - p_value` of the winner. If another variant is significantly worse, `other_variant_significantly_worse` is added to `risk_flags`.
-- `stop_and_rollback`: only if every treatment is significantly worse. `decision_confidence = 1 - p_value` of the losers (the largest of them).
-- `continue_collecting_data`: otherwise. `decision_confidence = 1 - p_value` of the leading comparison (the smallest adjusted p-value), so higher means closer to significance; it stays below `1 - alpha` until a decision is reached. `some_variants_significantly_worse` is added if at least one variant is significantly worse.
+- `ship_<variant>`: the best significantly positive eligible variant, even if others are not significant. `decision_confidence = 1 - p_value` of the winner. If another eligible variant is significantly worse, `other_variant_significantly_worse` is added to `risk_flags`.
+- `stop_and_rollback`: only if every eligible treatment is significantly worse. `decision_confidence = 1 - p_value` of the losers (the largest of them).
+- `continue_collecting_data`: otherwise. `decision_confidence = 1 - p_value` of the leading eligible comparison (the smallest adjusted p-value), so higher means closer to significance; it stays below `1 - alpha` until a decision is reached. `some_variants_significantly_worse` is added if at least one eligible variant is significantly worse.
 
 How the fixed-horizon recommendation is chosen:
-- `ship_<variant>`: the best significantly positive variant (`p_value <= alpha`). `decision_confidence = 1 - p_value` of the winner. Adds `other_variant_significantly_worse` if another treatment is significantly worse.
-- `do_not_ship`: if every treatment is significantly worse (`decision_confidence = 1 - max(p_value)`), or if no treatment reached significance at the planned look (`decision_confidence = 1 - min(p_value)`, reminding callers not to peek repeatedly with `--method fixed`).
+- `ship_<variant>`: the best significantly positive eligible variant (`p_value <= alpha`). `decision_confidence = 1 - p_value` of the winner. Adds `other_variant_significantly_worse` if another eligible treatment is significantly worse.
+- `do_not_ship`: if every eligible treatment is significantly worse (`decision_confidence = 1 - max(p_value)`), or if no eligible treatment reached significance at the planned look (`decision_confidence = 1 - min(p_value)`, reminding callers not to peek repeatedly with `--method fixed`).
 
 Applies to all methods, checked first:
 - SRM failure gives `investigate_data_quality`, flag `srm_detected`, `decision_confidence = 1 - SRM p-value`.
-- Guardrail failure gives `do_not_ship`, flag `guardrail_failure`, `decision_confidence = 1.0` (a deterministic rule, not a statistical test).
+- Legacy global threshold guardrail failure, or per-variant statistical guardrail failures on **all** treatments, gives `do_not_ship`, flag `guardrail_failure`, `decision_confidence = 1.0`.
+- Per-variant statistical guardrail failure on a **subset** of treatments excludes only those failing treatment(s) from shipping; another winning treatment can still receive `ship_<variant>` with `other_variant_guardrail_failure` in `risk_flags` (or `some_variants_guardrail_failure` if remaining treatments are inconclusive).
 
 If no explicit Bayesian decision policy is provided, `recommendation` is `null` and `analysis_settings.decision_policy` shows that no automated decision policy was applied.
 
