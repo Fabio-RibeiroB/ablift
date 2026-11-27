@@ -13,6 +13,7 @@ It supports:
 - Bayesian conversion-rate decisions (Beta-Binomial)
 - Bayesian ARPU decisions from aggregate revenue statistics (Normal-Inverse-Gamma)
 - Sequential decisions with mSPRT and always-valid confidence intervals: look as often as you like
+- Fixed-horizon frequentist decisions (`--method fixed`): two-proportion z-test and Welch's t-test (single planned look)
 - Multi-variant (`A/B/n`) comparisons against one control
 - Guardrail checks (latency, bounce rate, error rate, etc.)
 - SRM detection (sample ratio mismatch) for data quality
@@ -81,6 +82,12 @@ Run a sequential (mSPRT) analysis. It always produces a recommendation:
 ablift analyze --input examples/arpu_sequential.csv --method sequential
 ```
 
+Run a fixed-horizon frequentist analysis (only valid when evaluated once at the planned end of the test):
+
+```bash
+ablift analyze --input examples/conversion_multivariant.csv --method fixed
+```
+
 Plan how long a test needs to run:
 
 ```bash
@@ -94,7 +101,7 @@ ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 -
 - `ablift doctor`: verify the environment and required dependencies (`--json-output`, `--strict`)
 - `ablift example-input`: print a starter JSON payload
 
-Useful `analyze` flags: `--input-format {json,csv}`, `--method {bayesian,sequential}`, `--primary-metric {conversion_rate,arpu}`, `--alpha`, `--sequential-tau`, `--samples`, `--random-seed`, `--expected-split`, `--enable-recommendation/--no-recommendation`, `--prob-threshold`, `--max-expected-loss`, `--experiment-name`, `--sheet`, `--output`, `--report`. Flags override values in the input.
+Useful `analyze` flags: `--input-format {json,csv}`, `--method {bayesian,sequential,fixed}`, `--primary-metric {conversion_rate,arpu}`, `--alpha`, `--sequential-tau`, `--samples`, `--random-seed`, `--expected-split`, `--enable-recommendation/--no-recommendation`, `--prob-threshold`, `--max-expected-loss`, `--experiment-name`, `--sheet`, `--output`, `--report`. Flags override values in the input.
 
 ## Choosing the metric model
 
@@ -131,16 +138,16 @@ The input contract is strict about semantics, not source column names.
 - inference settings: priors, posterior sample count, random seed
 - decision policy: thresholds used to turn Bayesian estimates into actions
 
-For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `ablift` reports the posterior estimates but leaves `recommendation` as `null`. Sequential runs always produce a recommendation; the decision policy does not apply to them.
+For Bayesian runs, recommendations are optional. If you do not provide a decision policy, `ablift` reports the posterior estimates but leaves `recommendation` as `null`. Sequential and fixed-horizon runs always produce a recommendation; the Bayesian decision policy does not apply to them.
 
 For analysis inputs:
 - at least 2 variants are required
 - exactly 1 variant must have `is_control: true`
-- `method` must be `bayesian` or `sequential`
+- `method` must be `bayesian`, `sequential`, or `fixed`
 - `primary_metric` must be `conversion_rate` or `arpu`
 - `visitors` must be a positive integer
 - `conversions` must be a non-negative integer and cannot exceed `visitors`
-- `alpha` must be in `(0, 1)`; `sequential_tau` must be positive
+- `alpha` must be in `(0, 1)`; `sequential_tau` must be positive (and is only valid for `sequential`)
 - for `arpu`, each variant must also include `revenue_sum` and `revenue_sum_squares`
 
 Bayesian defaults:
@@ -159,6 +166,11 @@ Sequential defaults:
 - `sequential_tau` (CLI `--sequential-tau`) is the mSPRT mixing parameter: the prior standard deviation of the effect on the absolute scale. It defaults to 10% of the control baseline (conversion rate or ARPU). Pass it explicitly if you expect much larger or smaller effects.
 - You may look at results as often as you like: the false-positive rate stays at `alpha`.
 
+Fixed-horizon defaults (`--method fixed`):
+- `alpha` defaults to `0.05` (Bonferroni-adjusted across `n_variants - 1` comparisons, matching `ablift duration --method fixed`).
+- **Single-look assumption:** fixed-horizon p-values and confidence intervals are only valid when evaluated **once** at the planned end of the test. Do not peek repeatedly with `--method fixed`; use `--method sequential` for ongoing monitoring.
+- Sequential-only (`--sequential-tau`) and Bayesian-only (`--samples`, `--random-seed`, `--enable-recommendation`/`--no-recommendation`, `--prob-threshold`, `--max-expected-loss`) CLI flags are rejected with exit code 2 when `--method fixed` is chosen.
+
 Internal field meanings:
 - `name`: variant label
 - `visitors`: denominator units exposed to the experiment
@@ -169,7 +181,7 @@ Internal field meanings:
 
 Top-level fields:
 - `experiment_name` (str)
-- `method` (`"bayesian"` or `"sequential"`)
+- `method` (`"bayesian"`, `"sequential"`, or `"fixed"`)
 - `primary_metric` (`"conversion_rate"` or `"arpu"`)
 - `alpha` (float, default `0.05`)
 - `sequential_tau` (optional float, sequential mode; default 10% of the control baseline)
@@ -414,7 +426,8 @@ arpu,sequential,12.5,25.0,0.05,50000,2,0.05,0.8
 - **Conversion rate (Bayesian):** Beta-Binomial posterior with a `Beta(1, 1)` prior. Pairwise (`probability_beats_control`, `expected_loss`) and joint multi-arm (`probability_best`, `multi_arm_expected_loss`) metrics come from the same joint posterior draw matrix across all arms; `ci_low`/`ci_high` are 95% credible intervals.
 - **ARPU (Bayesian):** Normal-Inverse-Gamma posterior for the mean revenue per visitor, built from `visitors`, `revenue_sum` and `revenue_sum_squares`, with the same pairwise and joint multi-arm summaries.
 - **Sequential (mSPRT):** mixture sequential probability ratio test (Johari et al. 2017) on the difference in means, giving an e-value and a Bonferroni-adjusted always-valid p-value `min(1, n_comparisons/e_value)` (so `p_value <= alpha` exactly when `significant`), plus an always-valid confidence interval. A comparison is significant when `e_value >= e_threshold`. The mixing parameter is `sequential_tau`.
-- **Multiple variants:** in sequential mode alpha is Bonferroni-corrected: `alpha_per_comparison = alpha / number_of_treatments` and `e_threshold = 1 / alpha_per_comparison`. Bayesian mode applies no alpha correction and reports joint multi-arm probabilities (`probability_best`, summing to `1.0` across control and all treatments) and `multi_arm_expected_loss = E[max_j(theta_j) - theta_i]`. Both are reported in `analysis_settings.multiple_comparisons`.
+- **Fixed-horizon frequentist (`--method fixed`):** two-proportion z-test with unpooled confidence intervals for `conversion_rate`, and Welch's two-sample t-test (Welch-Satterthwaite degrees of freedom) with t-based confidence intervals for `arpu`. Only valid when evaluated **once** at the planned experiment end; do not peek repeatedly.
+- **Multiple variants:** in both sequential and fixed-horizon modes, alpha is Bonferroni-corrected: `alpha_per_comparison = alpha / number_of_treatments` (with `e_threshold = 1 / alpha_per_comparison` for sequential, and `p_value = min(1, raw_p_value * number_of_treatments)` plus simultaneous Bonferroni-adjusted CIs for fixed-horizon). Bayesian mode applies no alpha correction and reports joint multi-arm probabilities (`probability_best`, summing to `1.0` across control and all treatments) and `multi_arm_expected_loss = E[max_j(theta_j) - theta_i]`. Both are reported in `analysis_settings.multiple_comparisons`.
 - **SRM:** chi-square goodness-of-fit of the visitor counts against the configured expected traffic proportions (defaults to an equal `1/k` split; configurable via `expected_split`, per-variant `expected_share`, or `--expected-split`). Failure when `p < 0.001`.
 
 ## Agent playbook
@@ -441,15 +454,16 @@ Common errors and fixes:
 
 Output JSON starts with `"schema_version": "1"` (for both `analyze` and `duration`).
 
-`analysis_settings` includes `multiple_comparisons` (`correction`, `n_comparisons`, and for sequential `alpha_per_comparison`), `sequential_tau`, `priors`, `decision_policy` and `input_interpretation`.
+`analysis_settings` includes `multiple_comparisons` (`correction`, `n_comparisons`, and for sequential/fixed `alpha_per_comparison`), `sequential_tau`, `priors`, `decision_policy` and `input_interpretation`.
 
 `srm` includes `passed`, `p_value`, `observed`, `expected`, `expected_proportions` (normalized to sum to `1.0`), and `reason`.
 
 Each entry in `comparisons` has:
 - `control_rate`, `treatment_rate`, `absolute_lift`, `relative_lift`
-- `ci_low`, `ci_high`: interval on the **absolute** lift scale. Bayesian: 95% credible interval. Sequential: always-valid confidence interval.
+- `ci_low`, `ci_high`: interval on the **absolute** lift scale. Bayesian: 95% credible interval. Sequential: always-valid confidence interval. Fixed: Bonferroni-adjusted `(1 - alpha)` frequentist confidence interval (unpooled Wald for `conversion_rate`, Welch t for `arpu`).
 - Bayesian only: `probability_beats_control`, `expected_loss` (pairwise vs. control), `probability_best` (probability this arm is best overall across control and all treatments), `multi_arm_expected_loss` (`E[max_j(theta_j) - theta_i]`), `relative_ci_low`, `relative_ci_high`. For 2-variant tests, `probability_best == probability_beats_control` and `multi_arm_expected_loss == expected_loss`.
 - Sequential only: `p_value` (always-valid and Bonferroni-adjusted, `min(1, n_comparisons/e_value)`; `p_value <= alpha` exactly when `significant`), `e_value`, `e_threshold`, `significant`
+- Fixed only: `p_value` (Bonferroni-adjusted, `min(1, raw_p_value * n_comparisons)`; `p_value <= alpha` exactly when `significant`), `raw_p_value`, `test_statistic` (`z` for `conversion_rate`, Welch `t` for `arpu`), `degrees_of_freedom` (Welch-Satterthwaite df for `arpu`, `null` for `conversion_rate`), `significant`
 
 `bayesian_arms` (Bayesian mode only; `null` for other methods) is a list covering **every** arm (control and all treatments, in input order) with `variant`, `is_control`, `probability_best` (sums to `1.0` across all arms), and `multi_arm_expected_loss`.
 
@@ -470,7 +484,11 @@ How the sequential recommendation is chosen:
 - `stop_and_rollback`: only if every treatment is significantly worse. `decision_confidence = 1 - p_value` of the losers (the largest of them).
 - `continue_collecting_data`: otherwise. `decision_confidence = 1 - p_value` of the leading comparison (the smallest adjusted p-value), so higher means closer to significance; it stays below `1 - alpha` until a decision is reached. `some_variants_significantly_worse` is added if at least one variant is significantly worse.
 
-Applies to both methods, checked first:
+How the fixed-horizon recommendation is chosen:
+- `ship_<variant>`: the best significantly positive variant (`p_value <= alpha`). `decision_confidence = 1 - p_value` of the winner. Adds `other_variant_significantly_worse` if another treatment is significantly worse.
+- `do_not_ship`: if every treatment is significantly worse (`decision_confidence = 1 - max(p_value)`), or if no treatment reached significance at the planned look (`decision_confidence = 1 - min(p_value)`, reminding callers not to peek repeatedly with `--method fixed`).
+
+Applies to all methods, checked first:
 - SRM failure gives `investigate_data_quality`, flag `srm_detected`, `decision_confidence = 1 - SRM p-value`.
 - Guardrail failure gives `do_not_ship`, flag `guardrail_failure`, `decision_confidence = 1.0` (a deterministic rule, not a statistical test).
 

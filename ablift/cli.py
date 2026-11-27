@@ -34,6 +34,7 @@ ANALYZE_EPILOG = """\b
 Examples:
   ablift analyze --input experiment.json
   ablift analyze --input experiment.csv
+  ablift analyze --input experiment.csv --method fixed
   ablift analyze --input experiment.csv --expected-split 0.9,0.1
   ablift analyze --input experiment.xlsx --sheet Results
   ablift analyze --input experiment.csv --enable-recommendation --prob-threshold 0.9 --max-expected-loss 0.005
@@ -345,10 +346,42 @@ def run_doctor() -> dict:
     return {"ok": all_passed, "checks": checks}
 
 
+def _validate_fixed_method_flags(
+    *,
+    effective_method: str,
+    sequential_tau: float | None,
+    enable_recommendation: bool | None,
+    prob_threshold: float | None,
+    max_expected_loss: float | None,
+    samples: int | None,
+    random_seed: int | None,
+) -> None:
+    if effective_method != "fixed":
+        return
+    if sequential_tau is not None:
+        raise click.UsageError("--sequential-tau only applies to --method sequential.")
+    bayesian_flags: list[str] = []
+    if enable_recommendation is not None:
+        bayesian_flags.append(
+            "--enable-recommendation" if enable_recommendation else "--no-recommendation"
+        )
+    if prob_threshold is not None:
+        bayesian_flags.append("--prob-threshold")
+    if max_expected_loss is not None:
+        bayesian_flags.append("--max-expected-loss")
+    if samples is not None:
+        bayesian_flags.append("--samples")
+    if random_seed is not None:
+        bayesian_flags.append("--random-seed")
+    if bayesian_flags:
+        joined = ", ".join(bayesian_flags)
+        raise click.UsageError(f"{joined} only apply to --method bayesian, not --method fixed.")
+
+
 @click.group()
 @click.version_option(package_name="ablift", prog_name="ablift")
 def cli() -> None:
-    """Agent-friendly CLI for Bayesian and sequential (mSPRT) A/B/n experiment decisions."""
+    """Agent-friendly CLI for Bayesian, sequential (mSPRT), and fixed-horizon A/B/n experiment decisions."""
 
 
 @cli.command(epilog=ANALYZE_EPILOG)
@@ -376,9 +409,12 @@ def cli() -> None:
 )
 @click.option(
     "--method",
-    type=click.Choice(["bayesian", "sequential"]),
+    type=click.Choice(["bayesian", "sequential", "fixed"]),
     default=None,
-    help="Optional method override for CSV/XLSX input.",
+    help=(
+        "Statistical method override: 'bayesian', 'sequential' (always-valid mSPRT), or "
+        "'fixed' (fixed-horizon frequentist, valid only for a single planned look)."
+    ),
 )
 @click.option(
     "--primary-metric",
@@ -500,6 +536,18 @@ def analyze(
     except (ValueError, KeyError, json.JSONDecodeError) as exc:
         source = "stdin" if input_path == "-" else input_path
         raise click.ClickException(f"Could not read {source}: {exc}") from exc
+
+    effective_method = str(input_payload.get("method") or "bayesian")
+    _validate_fixed_method_flags(
+        effective_method=effective_method,
+        sequential_tau=sequential_tau,
+        enable_recommendation=enable_recommendation,
+        prob_threshold=prob_threshold,
+        max_expected_loss=max_expected_loss,
+        samples=samples,
+        random_seed=random_seed,
+    )
+
     try:
         _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
     except ValueError as exc:

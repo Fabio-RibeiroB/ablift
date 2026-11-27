@@ -118,8 +118,10 @@ def validate_input(inp: AnalysisInput) -> None:
     if inp.samples <= 0:
         raise ValueError("samples must be positive.")
 
-    if inp.method not in {"bayesian", "sequential"}:
-        raise ValueError("method must be 'bayesian' or 'sequential'.")
+    if inp.method not in {"bayesian", "sequential", "fixed"}:
+        raise ValueError("method must be 'bayesian', 'sequential', or 'fixed'.")
+    if inp.method == "fixed" and inp.sequential_tau is not None:
+        raise ValueError("sequential_tau only applies when method is 'sequential'.")
     if inp.primary_metric not in {"conversion_rate", "arpu"}:
         raise ValueError("primary_metric must be 'conversion_rate' or 'arpu'.")
 
@@ -154,6 +156,11 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     bayesian_arms: list[BayesianArmSummary] | None = None
     if inp.method == "bayesian":
         comparisons, bayesian_arms = _analyze_bayesian_joint(inp, control, treatments)
+    elif inp.method == "fixed":
+        if inp.primary_metric == "conversion_rate":
+            comparisons = analyze_fixed_conversion(inp, control, treatments)
+        else:
+            comparisons = analyze_fixed_arpu(inp, control, treatments)
     else:
         if inp.primary_metric == "conversion_rate":
             comparisons = analyze_sequential_conversion(inp, control, treatments)
@@ -523,7 +530,7 @@ def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
         }
 
     n_comparisons = sum(1 for v in inp.variants if not v.is_control)
-    if inp.method == "sequential":
+    if inp.method in {"sequential", "fixed"}:
         multiple_comparisons = {
             "correction": "bonferroni",
             "n_comparisons": n_comparisons,
@@ -729,6 +736,256 @@ def mean_and_var_from_aggregates(
     return mean, variance
 
 
+def _betacf(x: float, a: float, b: float) -> float:
+    """Continued fraction for the regularized incomplete beta function (Lentz's method)."""
+    max_iter = 200
+    eps = 3.0e-15
+    fpmin = 1.0e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < fpmin:
+        d = fpmin
+    d = 1.0 / d
+    h = d
+    for m in range(1, max_iter + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < fpmin:
+            d = fpmin
+        c = 1.0 + aa / c
+        if abs(c) < fpmin:
+            c = fpmin
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < eps:
+            break
+    return h
+
+
+def student_t_two_sided_p(t_stat: float, df: float) -> float:
+    """Two-sided p-value for Student's t distribution with ``df`` degrees of freedom."""
+    if df <= 0:
+        return 1.0
+    if not math.isfinite(t_stat):
+        return 0.0
+    if df > 1e7:
+        return 2.0 * (1.0 - NormalDist().cdf(abs(t_stat)))
+    t2 = t_stat * t_stat
+    if t2 == 0.0:
+        return 1.0
+    x = df / (df + t2)
+    y = t2 / (df + t2)
+    a = df / 2.0
+    b = 0.5
+    log_bt = (
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log1p(-y) + b * math.log(y)
+    )
+    bt = math.exp(log_bt)
+    if x < (a + 1.0) / (a + b + 2.0):
+        p = bt * _betacf(x, a, b) / a
+    else:
+        p = 1.0 - bt * _betacf(y, b, a) / b
+    return min(1.0, max(0.0, p))
+
+
+def student_t_ppf(q: float, df: float) -> float:
+    """Quantile (inverse CDF) of Student's t distribution at probability ``q``."""
+    if not (0.0 < q < 1.0):
+        raise ValueError(f"Probability q must be in (0, 1), got {q!r}.")
+    if q == 0.5:
+        return 0.0
+    if q < 0.5:
+        return -student_t_ppf(1.0 - q, df)
+    if df > 1e7:
+        return NormalDist().inv_cdf(q)
+    if df == 1.0:
+        return math.tan(math.pi * (q - 0.5))
+    if df == 2.0:
+        u = 2.0 * q - 1.0
+        return math.sqrt(2.0 * u * u / (1.0 - u * u))
+
+    target = 2.0 * (1.0 - q)
+    z = NormalDist().inv_cdf(q)
+    lo = max(0.0, z * 0.9)
+    while student_t_two_sided_p(lo, df) < target:
+        lo *= 0.5
+    hi = max(z * 1.1, 1.0)
+    while student_t_two_sided_p(hi, df) > target:
+        hi *= 2.0
+
+    log_norm = math.lgamma((df + 1.0) / 2.0) - math.lgamma(df / 2.0) - 0.5 * math.log(df * math.pi)
+    t_val = min(max(z, lo), hi)
+    for _ in range(60):
+        p = student_t_two_sided_p(t_val, df)
+        err = p - target
+        if err > 0.0:
+            lo = t_val
+        else:
+            hi = t_val
+        if abs(err) <= 1e-15 * max(target, 1e-15) or (hi - lo) <= 1e-14 * max(1.0, t_val):
+            break
+        log_pdf = log_norm - ((df + 1.0) / 2.0) * math.log1p((t_val * t_val) / df)
+        deriv = -2.0 * math.exp(log_pdf)
+        cand = t_val - err / deriv if deriv != 0.0 else 0.5 * (lo + hi)
+        t_val = cand if lo < cand < hi else 0.5 * (lo + hi)
+    return t_val
+
+
+def welch_t_test(
+    n1: int,
+    sum1: float,
+    sum_sq1: float,
+    n2: int,
+    sum2: float,
+    sum_sq2: float,
+) -> tuple[float, float | None, float | None, float]:
+    """Welch's two-sample t-test from aggregate sums and sums of squares.
+
+    Returns ``(raw_p_value, t_statistic, welch_satterthwaite_df, standard_error)``.
+    """
+    mean1, var1 = mean_and_var_from_aggregates(n1, sum1, sum_sq1)
+    mean2, var2 = mean_and_var_from_aggregates(n2, sum2, sum_sq2)
+    diff = mean2 - mean1
+
+    if n1 < 2 or n2 < 2:
+        return 1.0, None, None, 0.0
+
+    v1 = var1 / n1
+    v2 = var2 / n2
+    v = v1 + v2
+    if v <= 0.0:
+        df = float(n1 + n2 - 2)
+        if diff == 0.0:
+            return 1.0, 0.0, df, 0.0
+        return 0.0, None, df, 0.0
+
+    se = math.sqrt(v)
+    t_stat = diff / se
+    df_denom = (v1 * v1) / (n1 - 1) + (v2 * v2) / (n2 - 1)
+    df = (v * v) / df_denom
+    raw_p = student_t_two_sided_p(t_stat, df)
+    return raw_p, t_stat, df, se
+
+
+def analyze_fixed_conversion(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> list[ComparisonResult]:
+    """Fixed-horizon two-proportion z-test with unpooled Bonferroni-adjusted CIs."""
+    n_comparisons = len(treatments)
+    alpha_adj = per_comparison_alpha(inp.alpha, n_comparisons)
+    z_crit = NormalDist().inv_cdf(1.0 - alpha_adj / 2.0)
+    control_rate = control.conversions / control.visitors
+
+    out: list[ComparisonResult] = []
+    for treatment in treatments:
+        treatment_rate = treatment.conversions / treatment.visitors
+        diff = treatment_rate - control_rate
+        raw_p, z_stat, _ = two_proportion_test(
+            control.conversions,
+            control.visitors,
+            treatment.conversions,
+            treatment.visitors,
+        )
+        unpooled_var = (control_rate * (1.0 - control_rate) / control.visitors) + (
+            treatment_rate * (1.0 - treatment_rate) / treatment.visitors
+        )
+        ci_se = math.sqrt(max(unpooled_var, 0.0))
+        adj_p = min(1.0, raw_p * n_comparisons)
+
+        out.append(
+            ComparisonResult(
+                treatment=treatment.name,
+                control=control.name,
+                metric="conversion_rate",
+                control_rate=control_rate,
+                treatment_rate=treatment_rate,
+                absolute_lift=diff,
+                relative_lift=diff / max(control_rate, 1e-12),
+                p_value=float(adj_p),
+                raw_p_value=float(raw_p),
+                test_statistic=float(z_stat),
+                significant=bool(adj_p <= inp.alpha),
+                ci_low=float(diff - z_crit * ci_se),
+                ci_high=float(diff + z_crit * ci_se),
+            )
+        )
+    return out
+
+
+def analyze_fixed_arpu(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> list[ComparisonResult]:
+    """Fixed-horizon Welch's two-sample t-test with Bonferroni-adjusted CIs."""
+    n_comparisons = len(treatments)
+    alpha_adj = per_comparison_alpha(inp.alpha, n_comparisons)
+    c_sum = float(control.revenue_sum or 0.0)
+    c_sum_sq = float(control.revenue_sum_squares or 0.0)
+    c_mean, _ = mean_and_var_from_aggregates(control.visitors, c_sum, c_sum_sq)
+
+    out: list[ComparisonResult] = []
+    for treatment in treatments:
+        t_sum = float(treatment.revenue_sum or 0.0)
+        t_sum_sq = float(treatment.revenue_sum_squares or 0.0)
+        t_mean, _ = mean_and_var_from_aggregates(treatment.visitors, t_sum, t_sum_sq)
+        diff = t_mean - c_mean
+
+        raw_p, t_stat, df, se = welch_t_test(
+            control.visitors,
+            c_sum,
+            c_sum_sq,
+            treatment.visitors,
+            t_sum,
+            t_sum_sq,
+        )
+        adj_p = min(1.0, raw_p * n_comparisons)
+        significant = bool(adj_p <= inp.alpha)
+
+        ci_low: float | None
+        ci_high: float | None
+        if df is None:
+            ci_low, ci_high = None, None
+        elif se <= 0.0:
+            ci_low, ci_high = float(diff), float(diff)
+        else:
+            t_crit = student_t_ppf(1.0 - alpha_adj / 2.0, df)
+            ci_low = float(diff - t_crit * se)
+            ci_high = float(diff + t_crit * se)
+
+        out.append(
+            ComparisonResult(
+                treatment=treatment.name,
+                control=control.name,
+                metric="arpu",
+                control_rate=c_mean,
+                treatment_rate=t_mean,
+                absolute_lift=diff,
+                relative_lift=diff / max(abs(c_mean), 1e-12),
+                p_value=float(adj_p),
+                raw_p_value=float(raw_p),
+                test_statistic=float(t_stat) if t_stat is not None else None,
+                degrees_of_freedom=float(df) if df is not None else None,
+                significant=significant,
+                ci_low=ci_low,
+                ci_high=ci_high,
+            )
+        )
+    return out
+
+
 def sample_mean_posterior(
     n: int,
     value_sum: float,
@@ -884,6 +1141,59 @@ def recommend(
 
     winners = [c for c in comparisons if c.significant and c.absolute_lift > 0]
     losers = [c for c in comparisons if c.significant and c.absolute_lift < 0]
+
+    if inp.method == "fixed":
+        if winners:
+            winner = max(winners, key=lambda x: x.absolute_lift)
+            flags = risk_flags + (["other_variant_significantly_worse"] if losers else [])
+            return Recommendation(
+                action=f"ship_{winner.treatment}",
+                rationale=(
+                    f"Fixed-horizon significance reached for {winner.treatment} "
+                    f"(adjusted p={winner.p_value:.6g} <= alpha={inp.alpha:g}). "
+                    "Valid only when evaluated once at the planned experiment end."
+                ),
+                decision_confidence=float(1.0 - (winner.p_value or 0.0)),
+                next_best_action=(
+                    "Roll out gradually and continue guardrail monitoring. "
+                    "Do not reuse fixed-horizon testing for repeated peeking."
+                ),
+                risk_flags=flags,
+            )
+
+        if losers and len(losers) == len(comparisons):
+            worst = min(losers, key=lambda x: x.absolute_lift)
+            return Recommendation(
+                action="do_not_ship",
+                rationale=(
+                    f"Fixed-horizon significant negative lift detected for every treatment "
+                    f"(worst: {worst.treatment}, adjusted p={worst.p_value:.6g} "
+                    f"<= alpha={inp.alpha:g}). "
+                    "Valid only when evaluated once at the planned experiment end."
+                ),
+                decision_confidence=float(1.0 - max(c.p_value or 0.0 for c in losers)),
+                next_best_action="Keep the control and investigate adverse drivers before re-testing.",
+                risk_flags=risk_flags,
+            )
+
+        if losers:
+            risk_flags = risk_flags + ["some_variants_significantly_worse"]
+
+        best_p = min((c.p_value for c in comparisons if c.p_value is not None), default=1.0)
+        return Recommendation(
+            action="do_not_ship",
+            rationale=(
+                f"No treatment reached fixed-horizon significance at the planned look "
+                f"(min adjusted p={best_p:.6g} > alpha={inp.alpha:g}). "
+                "Fixed-horizon results are only valid for a single planned evaluation."
+            ),
+            decision_confidence=float(1.0 - best_p),
+            next_best_action=(
+                "Keep the control rather than peeking repeatedly; use --method sequential "
+                "for continuous monitoring or plan a new fixed-horizon run."
+            ),
+            risk_flags=risk_flags,
+        )
 
     if winners:
         winner = max(winners, key=lambda x: x.absolute_lift)

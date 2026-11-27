@@ -88,6 +88,9 @@ class ComparisonResult:
     absolute_lift: float
     relative_lift: float
     p_value: float | None = None
+    raw_p_value: float | None = None
+    test_statistic: float | None = None
+    degrees_of_freedom: float | None = None
     e_value: float | None = None
     e_threshold: float | None = None
     significant: bool | None = None
