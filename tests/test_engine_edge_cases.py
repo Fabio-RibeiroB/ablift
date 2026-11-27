@@ -349,6 +349,149 @@ class SrmBehaviour(unittest.TestCase):
         self.assertFalse(srm.passed)
 
 
+class SrmExpectedSplitTests(unittest.TestCase):
+    def test_unequal_90_10_passes_with_expected_split_list_and_allows_shipping(self):
+        res = run(
+            [var("control", 90_000, 3600, True), var("v1", 10_000, 500)],
+            method="sequential",
+            expected_split=[0.9, 0.1],
+        )
+        self.assertTrue(res.srm.passed)
+        self.assertAlmostEqual(res.srm.p_value, 1.0, places=6)
+        self.assertEqual(res.srm.expected, [90_000.0, 10_000.0])
+        self.assertEqual(res.srm.expected_proportions, [0.9, 0.1])
+        self.assertEqual(res.recommendation.action, "ship_v1")
+        self.assertEqual(res.recommendation.risk_flags, [])
+
+    def test_unequal_90_10_skewed_fails_with_srm_detected(self):
+        res = run(
+            [var("control", 85_000, 3400, True), var("v1", 15_000, 750)],
+            method="sequential",
+            expected_split=[90, 10],
+        )
+        self.assertFalse(res.srm.passed)
+        self.assertEqual(res.srm.expected, [90_000.0, 10_000.0])
+        self.assertEqual(res.srm.expected_proportions, [0.9, 0.1])
+        self.assertEqual(res.recommendation.action, "investigate_data_quality")
+        self.assertIn("srm_detected", res.recommendation.risk_flags)
+
+    def test_expected_split_dict_matches_by_variant_name_regardless_of_key_order(self):
+        res = run(
+            [
+                var("control", 50_000, 2000, True),
+                var("v1", 25_000, 1000),
+                var("v2", 25_000, 1050),
+            ],
+            expected_split={"v2": 25, "control": 50, "v1": 25},
+        )
+        self.assertTrue(res.srm.passed)
+        self.assertAlmostEqual(res.srm.p_value, 1.0, places=6)
+        self.assertEqual(res.srm.expected_proportions, [0.5, 0.25, 0.25])
+        self.assertEqual(res.srm.expected, [50_000.0, 25_000.0, 25_000.0])
+
+    def test_per_variant_expected_share_normalizes_and_passes(self):
+        variants = [
+            {**var("control", 80_000, 3200, True), "expected_share": 80},
+            {**var("v1", 20_000, 900), "expected_share": 20},
+        ]
+        res = run(variants, method="sequential")
+        self.assertTrue(res.srm.passed)
+        self.assertAlmostEqual(res.srm.p_value, 1.0, places=6)
+        self.assertEqual(res.srm.expected_proportions, [0.8, 0.2])
+        self.assertEqual(res.srm.expected, [80_000.0, 20_000.0])
+
+    def test_per_variant_expected_share_skewed_fails_srm(self):
+        variants = [
+            {**var("control", 50_000, 2000, True), "expected_share": 0.8},
+            {**var("v1", 50_000, 2200), "expected_share": 0.2},
+        ]
+        res = run(variants, method="sequential")
+        self.assertFalse(res.srm.passed)
+        self.assertEqual(res.recommendation.action, "investigate_data_quality")
+        self.assertIn("srm_detected", res.recommendation.risk_flags)
+
+    def test_rejects_both_expected_split_and_expected_share(self):
+        variants = [
+            {**var("control", 8000, 320, True), "expected_share": 0.8},
+            {**var("v1", 2000, 90), "expected_share": 0.2},
+        ]
+        with self.assertRaisesRegex(ValueError, "Cannot specify both"):
+            run(variants, expected_split=[0.8, 0.2])
+
+    def test_rejects_partial_expected_share(self):
+        variants = [
+            {**var("control", 8000, 320, True), "expected_share": 0.8},
+            var("v1", 2000, 90),
+        ]
+        with self.assertRaisesRegex(ValueError, "all variants or none"):
+            run(variants)
+
+    def test_rejects_invalid_expected_share_values(self):
+        for bad in (0, 0.0, -0.5, float("nan"), float("inf"), float("-inf"), "0.5", True, False):
+            with self.subTest(bad=bad):
+                variants = [
+                    {**var("control", 5000, 200, True), "expected_share": 0.5},
+                    {**var("v1", 5000, 210), "expected_share": bad},
+                ]
+                with self.assertRaises(ValueError):
+                    run(variants)
+
+    def test_rejects_invalid_expected_split_list_values_and_lengths(self):
+        for bad in (
+            [],
+            [0.5],
+            [0.5, 0.25, 0.25],
+            [0.5, 0],
+            [0.5, -0.5],
+            [0.5, float("nan")],
+            [0.5, float("inf")],
+            [0.5, float("-inf")],
+            [0.5, "0.5"],
+            [0.5, None],
+            [True, False],
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    run(two_arm(40, 45, 1000), expected_split=bad)
+
+    def test_rejects_invalid_expected_split_dict(self):
+        for bad, pattern in (
+            ({}, "missing variant"),
+            ({"control": 0.5}, "missing variant"),
+            ({"control": 0.5, "v1": 0.3, "extra": 0.2}, "unknown variant"),
+            ({"control": 0.5, "typo": 0.5}, "unknown variant"),
+            ({"control": 0.5, "v1": 0}, "finite positive"),
+            ({"control": 0.5, "v1": -1}, "finite positive"),
+            ({"control": 0.5, "v1": float("nan")}, "finite positive"),
+            ({"control": 0.5, "v1": float("inf")}, "finite positive"),
+            ({"control": 0.5, "v1": "0.5"}, "positive number"),
+            ({"control": 0.5, "v1": True}, "positive number"),
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    run(two_arm(40, 45, 1000), expected_split=bad)
+
+    def test_rejects_non_list_non_dict_expected_split(self):
+        for bad in ("0.5,0.5", 0.5, True):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "list of positive weights or a mapping"):
+                    run(two_arm(40, 45, 1000), expected_split=bad)
+
+    def test_rejects_overflowing_or_underflowing_weight_ratios(self):
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            run(two_arm(40, 45, 1000), expected_split=[1e308, 1e308])
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            run(two_arm(40, 45, 1000), expected_split=[1e300, 1e-300])
+
+    def test_default_equal_split_sets_expected_proportions_in_output_dict(self):
+        res = run([var("control", 1000, 40, True), var("v1", 1000, 45), var("v2", 1000, 50)])
+        srm_dict = res.to_dict()["srm"]
+        self.assertIn("expected_proportions", srm_dict)
+        self.assertEqual(len(srm_dict["expected_proportions"]), 3)
+        for p in srm_dict["expected_proportions"]:
+            self.assertAlmostEqual(p, 1.0 / 3.0, places=12)
+
+
 class SequentialRecommendations(unittest.TestCase):
     def arms(self, *convs, n=100_000):
         names = ["control"] + [f"v{i}" for i in range(1, len(convs))]

@@ -148,6 +148,7 @@ def build_markdown_report(result: AnalysisResult) -> str:
         "## Data Quality",
         f"- SRM passed: `{result.srm.passed}`",
         f"- SRM p-value: {_fmt_float(result.srm.p_value, 6)}",
+        f"- SRM expected proportions: {', '.join(_fmt_pct(p) for p in result.srm.expected_proportions)}",
         f"- SRM reason: {result.srm.reason}",
         "",
         "## Variant Comparisons",

@@ -412,6 +412,7 @@ def _build_final_payload(
         "guardrails": defaults.get("guardrails", []),
         "samples": defaults.get("samples", 50000),
         "random_seed": defaults.get("random_seed", 7),
+        "expected_split": defaults.get("expected_split"),
         "variants": variants,
         "input_interpretation": {
             "source_type": source_type,

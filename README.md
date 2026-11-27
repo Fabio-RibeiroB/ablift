@@ -94,7 +94,7 @@ ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 -
 - `ablift doctor`: verify the environment and required dependencies (`--json-output`, `--strict`)
 - `ablift example-input`: print a starter JSON payload
 
-Useful `analyze` flags: `--input-format {json,csv}`, `--method {bayesian,sequential}`, `--primary-metric {conversion_rate,arpu}`, `--alpha`, `--sequential-tau`, `--samples`, `--random-seed`, `--enable-recommendation/--no-recommendation`, `--prob-threshold`, `--max-expected-loss`, `--experiment-name`, `--sheet`, `--output`, `--report`. Flags override values in the input.
+Useful `analyze` flags: `--input-format {json,csv}`, `--method {bayesian,sequential}`, `--primary-metric {conversion_rate,arpu}`, `--alpha`, `--sequential-tau`, `--samples`, `--random-seed`, `--expected-split`, `--enable-recommendation/--no-recommendation`, `--prob-threshold`, `--max-expected-loss`, `--experiment-name`, `--sheet`, `--output`, `--report`. Flags override values in the input.
 
 ## Choosing the metric model
 
@@ -174,6 +174,7 @@ Top-level fields:
 - `alpha` (float, default `0.05`)
 - `sequential_tau` (optional float, sequential mode; default 10% of the control baseline)
 - `variants` (list): exactly one row must include `"is_control": true`
+- `expected_split` (optional): expected traffic allocation weights for the SRM check, either as a list of positive numbers matching `variants` order (e.g. `[0.9, 0.1]` or `[90, 10]`) or an object mapping each variant name to a positive number (e.g. `{"control": 0.8, "v1": 0.2}`). Weights are normalized to sum to `1.0`. Defaults to an equal `1/k` split when omitted. Cannot be combined with per-variant `expected_share`.
 - `guardrails` (optional list)
 - `decision_policy` (optional, Bayesian mode):
   - `enabled` (bool)
@@ -194,6 +195,8 @@ Variant row:
   "is_control": true
 }
 ```
+
+Each variant row also accepts an optional `expected_share` (positive number) for unequal traffic splits. If used, it must be set on every variant (and not combined with top-level `expected_split`); weights are normalized to sum to `1.0`. On the CLI, `--expected-split` overrides any split from the input file or `pyproject.toml`, accepting either comma-separated weights in variant order (`--expected-split 0.9,0.1` or `--expected-split 90,10`) or `name=weight` pairs (`--expected-split control=0.8,v1=0.2`).
 
 For `primary_metric: "arpu"`, each variant also needs `revenue_sum` and `revenue_sum_squares`.
 
@@ -396,7 +399,7 @@ sequential,0.04,0.05,50000,3,0.05,0.8
 - **ARPU (Bayesian):** Normal-Inverse-Gamma posterior for the mean revenue per visitor, built from `visitors`, `revenue_sum` and `revenue_sum_squares`.
 - **Sequential (mSPRT):** mixture sequential probability ratio test (Johari et al. 2017) on the difference in means, giving an e-value and a Bonferroni-adjusted always-valid p-value `min(1, n_comparisons/e_value)` (so `p_value <= alpha` exactly when `significant`), plus an always-valid confidence interval. A comparison is significant when `e_value >= e_threshold`. The mixing parameter is `sequential_tau`.
 - **Multiple variants:** in sequential mode alpha is Bonferroni-corrected: `alpha_per_comparison = alpha / number_of_treatments` and `e_threshold = 1 / alpha_per_comparison`. Bayesian mode applies no correction. Both are reported in `analysis_settings.multiple_comparisons`.
-- **SRM:** chi-square goodness-of-fit of the visitor counts against an equal split. Failure when `p < 0.001`.
+- **SRM:** chi-square goodness-of-fit of the visitor counts against the configured expected traffic proportions (defaults to an equal `1/k` split; configurable via `expected_split`, per-variant `expected_share`, or `--expected-split`). Failure when `p < 0.001`.
 
 ## Agent playbook
 
@@ -423,6 +426,8 @@ Common errors and fixes:
 Output JSON starts with `"schema_version": "1"` (for both `analyze` and `duration`).
 
 `analysis_settings` includes `multiple_comparisons` (`correction`, `n_comparisons`, and for sequential `alpha_per_comparison`), `sequential_tau`, `priors`, `decision_policy` and `input_interpretation`.
+
+`srm` includes `passed`, `p_value`, `observed`, `expected`, `expected_proportions` (normalized to sum to `1.0`), and `reason`.
 
 Each entry in `comparisons` has:
 - `control_rate`, `treatment_rate`, `absolute_lift`, `relative_lift`
@@ -451,7 +456,6 @@ If no explicit Bayesian decision policy is provided, `recommendation` is `null` 
 ## Limitations
 
 - ARPU uses a normal approximation of the mean. Heavy-tailed revenue may need winsorising upstream.
-- SRM assumes an equal traffic split across variants.
 - mSPRT guarantees assume you re-run the analysis on cumulative data as it arrives. The tool keeps no state between looks.
 - No variance reduction (CUPED) yet.
 - Duration planning is conversion-rate only.
