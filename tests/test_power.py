@@ -21,6 +21,8 @@ from ablift.schemas import get_schema
 
 
 def run(*args: str):
+    if "--method" not in args:
+        args = ("--method", "fixed", *args)
     return CliRunner().invoke(cli, ["power", *args])
 
 

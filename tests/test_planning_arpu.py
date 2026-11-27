@@ -427,8 +427,8 @@ class ArpuDurationCliAndConnectorTests(unittest.TestCase):
         # Override baseline_cv in file with --baseline-sd on CLI.
         cv_csv = self.write(
             "arpu_cv.csv",
-            "metric,baseline_mean,baseline_cv,relative_mde,daily_traffic\n"
-            "arpu,10.0,2.0,0.05,50000\n",
+            "metric,method,baseline_mean,baseline_cv,relative_mde,daily_traffic\n"
+            "arpu,sequential,10.0,2.0,0.05,50000\n",
         )
         res_sd = self.run_cli(["duration", "--input", cv_csv, "--baseline-sd", "15.0"])
         self.assertEqual(res_sd.exit_code, 0, res_sd.output)
@@ -622,7 +622,7 @@ class ArpuDurationCliAndConnectorTests(unittest.TestCase):
         ]
         for args in cases:
             with self.subTest(args=args):
-                res = self.run_cli(["duration", *args])
+                res = self.run_cli(["duration", "--method", "sequential", *args])
                 self.assertEqual(res.exit_code, 1, res.output)
                 self.assertIn("Error", res.output)
                 self.assertNotIn("Traceback", res.output)

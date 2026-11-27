@@ -539,6 +539,8 @@ def test_cli_bad_splits_exit_code_2(bad_split: str) -> None:
         cli,
         [
             "power",
+            "--method",
+            "fixed",
             "--baseline-rate",
             "0.08",
             "--n-total",
@@ -556,9 +558,11 @@ def test_cli_power_flag_usage_errors() -> None:
     """Power rejects --n-per-variant with --expected-split, both size flags, or neither."""
     runner = CliRunner()
     for args in (
-        ["power", "--baseline-rate", "0.08", "--relative-mde", "0.1"],
+        ["power", "--method", "fixed", "--baseline-rate", "0.08", "--relative-mde", "0.1"],
         [
             "power",
+            "--method",
+            "fixed",
             "--baseline-rate",
             "0.08",
             "--n-per-variant",
@@ -570,6 +574,8 @@ def test_cli_power_flag_usage_errors() -> None:
         ],
         [
             "power",
+            "--method",
+            "fixed",
             "--baseline-rate",
             "0.08",
             "--n-per-variant",
@@ -646,6 +652,7 @@ def test_cli_duration_input_files_with_expected_split(tmp_path: Path) -> None:
     # Bad expected_split in JSON / CSV input exits with code 2
     bad_json = json.dumps(
         {
+            "method": "fixed",
             "baseline_rate": 0.04,
             "relative_mde": 0.05,
             "daily_traffic": 50_000,
@@ -657,6 +664,7 @@ def test_cli_duration_input_files_with_expected_split(tmp_path: Path) -> None:
 
     wrong_len_json = json.dumps(
         {
+            "method": "fixed",
             "baseline_rate": 0.04,
             "relative_mde": 0.05,
             "daily_traffic": 50_000,
@@ -783,6 +791,8 @@ def test_cli_outputs_validate_against_schemas() -> None:
     pwr_cases = [
         [
             "power",
+            "--method",
+            "fixed",
             "--baseline-rate",
             "0.08",
             "--n-total",
@@ -794,6 +804,8 @@ def test_cli_outputs_validate_against_schemas() -> None:
         ],
         [
             "power",
+            "--method",
+            "fixed",
             "--baseline-rate",
             "0.08",
             "--n-total",

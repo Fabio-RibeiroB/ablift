@@ -41,11 +41,11 @@ ablift example-input | ablift analyze --input -
 printf 'variant,visitors,conversions\ncontrol,30000,1200\nnew_checkout,30000,1410\n' \
   | ablift analyze --input - --input-format csv --method sequential
 
-# Plan how long a test needs to run
-ablift duration --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000
+# Plan how long a sequential test needs to run (duration and power need --method)
+ablift duration --method sequential --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000
 
-# Power analysis: what lift can 10,000 users per variant detect?
-ablift power --baseline-rate 0.08 --n-per-variant 10000
+# Power analysis: what lift can 10,000 users per variant detect in a single-look test?
+ablift power --method fixed --baseline-rate 0.08 --n-per-variant 10000
 ```
 
 Add `--report report.md` to any `analyze` run for a human-readable Markdown summary.

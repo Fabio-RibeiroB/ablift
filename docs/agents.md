@@ -24,7 +24,7 @@ ablift schema analyze-output --output analyze-output.schema.json
 4. Inspect `srm.passed`, `guardrails_passed`, top-level `risk_flags`, and `comparisons` (plus `bayesian_arms` in Bayesian mode).
 5. If `srm_detected` or `covariate_imbalance` is in `risk_flags`, resolve tracking or randomization issues before acting on lift estimates.
 6. If you want an opt-in rule-based decision summary (`ship_<variant>`, `continue_collecting_data`, `do_not_ship`, `stop_and_rollback`, `investigate_data_quality`), pass `--recommend` (or set `decision_policy.enabled = true`) and read `recommendation`. With `--method sequential`, re-running on cumulative data is always safe, however often you look.
-7. For planning questions, run `ablift duration` (flags, file, or `--input -`). When the sample size is already fixed, run `ablift power` to get the power for a given lift, or the smallest detectable lift.
+7. For planning questions, run `ablift duration --method <sequential|fixed|bayesian>` (flags, file, or `--input -`; the method is required and should match the one you will analyze with). When the sample size is already fixed, run `ablift power --method <fixed|sequential>` to get the power for a given lift, or the smallest detectable lift.
 
 When aggregating raw exposure and event tables in SQL before piping into `ablift`, start from the [reference SQL query](sql.md).
 
