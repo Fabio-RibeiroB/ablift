@@ -16,7 +16,20 @@ from ablift.connectors import UsageOptionError, build_payload_from_rows
 from ablift.engine import analyze, parse_payload
 from ablift.reporting import build_markdown_report
 from ablift.schemas import get_schema
-from ablift.stats import compute_cuped_adjustment, validate_cuped_aggregates
+from ablift.stats import CupedSums, compute_cuped_adjustment, validate_cuped_aggregates
+
+
+def _sums(name: str, is_control: bool, y: np.ndarray, x: np.ndarray) -> CupedSums:
+    return CupedSums(
+        name,
+        is_control,
+        int(y.size),
+        float(y.sum()),
+        float((y * y).sum()),
+        float(x.sum()),
+        float((x * x).sum()),
+        float((y * x).sum()),
+    )
 
 
 def _arm_aggregates_arpu(
@@ -70,26 +83,8 @@ class TestCupedMathAndValidation:
 
         arms_1, diag_1 = compute_cuped_adjustment(
             [
-                (
-                    "control",
-                    True,
-                    n,
-                    float(np.sum(y_c)),
-                    float(np.sum(y_c**2)),
-                    float(np.sum(x_c)),
-                    float(np.sum(x_c**2)),
-                    float(np.sum(y_c * x_c)),
-                ),
-                (
-                    "treatment",
-                    False,
-                    n,
-                    float(np.sum(y_t)),
-                    float(np.sum(y_t**2)),
-                    float(np.sum(x_t)),
-                    float(np.sum(x_t**2)),
-                    float(np.sum(y_t * x_t)),
-                ),
+                _sums("control", True, y_c, x_c),
+                _sums("treatment", False, y_t, x_t),
             ]
         )
 
@@ -110,31 +105,13 @@ class TestCupedMathAndValidation:
         y_t_shifted = y_t + 50.0
         arms_2, diag_2 = compute_cuped_adjustment(
             [
-                (
-                    "control",
-                    True,
-                    n,
-                    float(np.sum(y_c)),
-                    float(np.sum(y_c**2)),
-                    float(np.sum(x_c)),
-                    float(np.sum(x_c**2)),
-                    float(np.sum(y_c * x_c)),
-                ),
-                (
-                    "treatment",
-                    False,
-                    n,
-                    float(np.sum(y_t_shifted)),
-                    float(np.sum(y_t_shifted**2)),
-                    float(np.sum(x_t)),
-                    float(np.sum(x_t**2)),
-                    float(np.sum(y_t_shifted * x_t)),
-                ),
+                _sums("control", True, y_c, x_c),
+                _sums("treatment", False, y_t_shifted, x_t),
             ]
         )
         assert math.isclose(diag_2["theta"], diag_1["theta"], rel_tol=1e-10)
-        assert math.isclose(arms_2["treatment"][0] - arms_1["treatment"][0], 50.0, abs_tol=1e-9)
-        assert math.isclose(arms_2["treatment"][1], arms_1["treatment"][1], rel_tol=1e-9)
+        assert math.isclose(arms_2["treatment"].mean - arms_1["treatment"].mean, 50.0, abs_tol=1e-9)
+        assert math.isclose(arms_2["treatment"].var, arms_1["treatment"].var, rel_tol=1e-9)
 
     def test_zero_variance_covariate_degrades_gracefully(self) -> None:
         n = 100
@@ -146,34 +123,16 @@ class TestCupedMathAndValidation:
 
         arms, diag = compute_cuped_adjustment(
             [
-                (
-                    "control",
-                    True,
-                    n,
-                    float(np.sum(y_c)),
-                    float(np.sum(y_c**2)),
-                    float(np.sum(x_c)),
-                    float(np.sum(x_c**2)),
-                    float(np.sum(y_c * x_c)),
-                ),
-                (
-                    "treatment",
-                    False,
-                    n,
-                    float(np.sum(y_t)),
-                    float(np.sum(y_t**2)),
-                    float(np.sum(x_t)),
-                    float(np.sum(x_t**2)),
-                    float(np.sum(y_t * x_t)),
-                ),
+                _sums("control", True, y_c, x_c),
+                _sums("treatment", False, y_t, x_t),
             ]
         )
         assert diag["theta"] == 0.0
         assert diag["r_squared"] == 0.0
         assert diag["variance_reduction_pct"] == 0.0
         assert diag["covariate_imbalanced"] is False
-        assert math.isclose(arms["control"][0], float(np.mean(y_c)), rel_tol=1e-12)
-        assert math.isclose(arms["control"][1], float(np.var(y_c, ddof=1)), rel_tol=1e-12)
+        assert math.isclose(arms["control"].mean, float(np.mean(y_c)), rel_tol=1e-12)
+        assert math.isclose(arms["control"].var, float(np.var(y_c, ddof=1)), rel_tol=1e-12)
 
     def test_validate_cuped_aggregates_rejects_invalid_inputs(self) -> None:
         with pytest.raises(ValueError, match="at least 2 visitors"):
@@ -194,6 +153,58 @@ class TestCupedMathAndValidation:
 
 
 class TestCupedStatisticalProperties:
+    def test_lifts_match_ols_ancova_for_every_method(self) -> None:
+        """Independent reference: CUPED lifts equal the arm coefficients of OLS Y ~ arm + X."""
+        rng = np.random.default_rng(3)
+        xs = [rng.normal(50.0, 15.0, size=n) for n in (800, 900, 700)]
+        ys = [
+            0.8 * x + rng.normal(0.0, 8.0, size=x.size) + d
+            for x, d in zip(xs, (0.0, 1.5, -0.5), strict=True)
+        ]
+        arm = np.repeat([0, 1, 2], [x.size for x in xs])
+        design = np.column_stack(
+            [np.ones(arm.size), arm == 1, arm == 2, np.concatenate(xs)]
+        ).astype(float)
+        ols = np.linalg.lstsq(design, np.concatenate(ys), rcond=None)[0]
+        variants = [
+            _arm_aggregates_arpu(name, i == 0, y, x)
+            for i, (name, y, x) in enumerate(zip(("a", "b", "c"), ys, xs, strict=True))
+        ]
+        for method in ("fixed", "sequential", "bayesian"):
+            res = analyze(
+                parse_payload({"method": method, "primary_metric": "arpu", "variants": variants})
+            )
+            lifts = [c.absolute_lift for c in res.comparisons]
+            np.testing.assert_allclose(lifts, ols[1:3], rtol=1e-9, err_msg=method)
+            theta = res.analysis_settings.input_interpretation["cuped"]["theta"]
+            assert math.isclose(theta, ols[3], rel_tol=1e-9)
+
+    def test_sequential_type_i_error_controlled_under_repeated_looks(self) -> None:
+        rng = np.random.default_rng(7)
+        trials, looks = 200, np.linspace(200, 2000, 10).astype(int)
+        false_positives = 0
+        for _ in range(trials):
+            x = rng.normal(50.0, 15.0, size=(2, looks[-1]))
+            y = 0.8 * x + rng.normal(0.0, 8.0, size=x.shape)
+            for k in looks:
+                res = analyze(
+                    parse_payload(
+                        {
+                            "method": "sequential",
+                            "primary_metric": "arpu",
+                            "variants": [
+                                _arm_aggregates_arpu("control", True, y[0, :k], x[0, :k]),
+                                _arm_aggregates_arpu("treatment", False, y[1, :k], x[1, :k]),
+                            ],
+                        }
+                    )
+                )
+                if res.comparisons[0].significant:
+                    false_positives += 1
+                    break
+        # alpha = 0.05 and mSPRT is always-valid, so peeking 10 times must not inflate it.
+        assert false_positives / trials <= 0.05
+
     def test_type_i_error_preserved_under_null_arpu_and_conversion(self) -> None:
         rng = np.random.default_rng(2025)
         n_trials = 300
