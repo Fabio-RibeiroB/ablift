@@ -56,7 +56,7 @@ def render_svg() -> str:
     if run.exit_code != 0:
         raise RuntimeError(f"ablift {' '.join(ARGS)} failed:\n{run.output}")
 
-    console = Console(record=True, width=84, file=io.StringIO(), force_terminal=True)
+    console = Console(record=True, width=84, height=25, file=io.StringIO(), force_terminal=True)
     console.print(_prompt(f"cat {INPUT}"))
     console.print((ROOT / INPUT).read_text(encoding="utf-8").rstrip(), highlight=False)
     console.print()

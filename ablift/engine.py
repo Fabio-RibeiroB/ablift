@@ -160,9 +160,35 @@ def _parse_submetric_variants(
     return parsed
 
 
+_ALLOWED_PAYLOAD_KEYS = frozenset(
+    {
+        "experiment_name",
+        "method",
+        "primary_metric",
+        "alpha",
+        "sequential_tau",
+        "variants",
+        "expected_split",
+        "guardrails",
+        "secondary_metrics",
+        "decision_policy",
+        "decision_thresholds",
+        "samples",
+        "random_seed",
+        "input_interpretation",
+    }
+)
+
+
 def _parse_payload(payload: dict) -> AnalysisInput:
     if not isinstance(payload, dict):
         raise ValueError("Input must be a JSON object.")
+    unknown_top = sorted(set(payload) - _ALLOWED_PAYLOAD_KEYS)
+    if unknown_top:
+        raise ValueError(
+            f"Unknown top-level field(s): {', '.join(str(k) for k in unknown_top)}. "
+            f"Expected any of: {', '.join(sorted(_ALLOWED_PAYLOAD_KEYS))}."
+        )
     variants = [VariantInput(**row) for row in payload["variants"]]
     if (payload.get("primary_metric") or "conversion_rate") == "conversion_rate":
         for row in payload["variants"]:
@@ -223,7 +249,11 @@ def _parse_payload(payload: dict) -> AnalysisInput:
     threshold_payload = payload.get("decision_thresholds")
     method = payload.get("method") or "bayesian"
 
-    if decision_policy_payload is not None:
+    if method != "bayesian":
+        decision_policy = DecisionPolicy(
+            enabled=True, thresholds=None, source="implicit_method_defaults"
+        )
+    elif decision_policy_payload is not None:
         enabled = bool(decision_policy_payload.get("enabled", True))
         merged_thresholds = {
             "bayes_prob_beats_control": decision_policy_payload.get(
@@ -243,12 +273,8 @@ def _parse_payload(payload: dict) -> AnalysisInput:
             thresholds=DecisionThresholds(**threshold_payload),
             source="decision_thresholds",
         )
-    elif method == "bayesian":
-        decision_policy = DecisionPolicy(enabled=False, thresholds=None, source="none")
     else:
-        decision_policy = DecisionPolicy(
-            enabled=True, thresholds=None, source="implicit_method_defaults"
-        )
+        decision_policy = DecisionPolicy(enabled=False, thresholds=None, source="none")
 
     return AnalysisInput(
         experiment_name=payload.get("experiment_name") or "experiment",
@@ -1126,13 +1152,6 @@ def _analyze_bayesian_joint(
     )
 
 
-def analyze_bayesian_conversion(
-    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
-) -> list[ComparisonResult]:
-    comparisons, _ = _analyze_bayesian_joint(inp, control, treatments)
-    return comparisons
-
-
 def build_analysis_settings(
     inp: AnalysisInput, *, input_interpretation: dict[str, Any] | None = None
 ) -> AnalysisSettings:
@@ -1202,13 +1221,6 @@ def build_analysis_settings(
             input_interpretation if input_interpretation is not None else inp.input_interpretation
         ),
     )
-
-
-def analyze_bayesian_arpu(
-    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
-) -> list[ComparisonResult]:
-    comparisons, _ = _analyze_bayesian_joint(inp, control, treatments)
-    return comparisons
 
 
 def _default_tau(baseline: float) -> float:
@@ -1667,9 +1679,12 @@ def analyze_fixed_conversion(
         treatment_rate = treatment.conversions / treatment.visitors
         diff = treatment_rate - control_rate
         counts = (control.conversions, control.visitors, treatment.conversions, treatment.visitors)
-        raw_p, z_stat, _ = two_proportion_test(*counts)
+        z_stat: float | None
         if _is_sparse_table(control, treatment):
             raw_p = fisher_exact_p_value(*counts)
+            z_stat = None
+        else:
+            raw_p, z_stat, _ = two_proportion_test(*counts)
         ci_low, ci_high = newcombe_diff_ci(*counts, z_crit)
         adj_p = min(1.0, raw_p * n_comparisons)
 
@@ -1684,7 +1699,7 @@ def analyze_fixed_conversion(
                 relative_lift=diff / max(control_rate, 1e-12),
                 p_value=float(adj_p),
                 raw_p_value=float(raw_p),
-                test_statistic=float(z_stat),
+                test_statistic=float(z_stat) if z_stat is not None else None,
                 significant=bool(adj_p <= inp.alpha),
                 ci_low=float(ci_low),
                 ci_high=float(ci_high),

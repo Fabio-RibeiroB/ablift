@@ -154,12 +154,6 @@ def fixed_horizon_duration_conversion(
     )
 
 
-def _msprt_power(n: int, p1: float, p2: float, tau: float, alpha_adj: float) -> float:
-    """Probability the mSPRT has rejected by the time each arm has ``n`` units."""
-    v = (p1 * (1 - p1) + p2 * (1 - p2)) / n
-    return _msprt_power_for_variance(v, p2 - p1, tau, alpha_adj)
-
-
 def sequential_duration_conversion(
     baseline_rate: float,
     relative_mde: float,

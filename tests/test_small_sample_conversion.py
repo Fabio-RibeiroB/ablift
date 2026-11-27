@@ -63,11 +63,18 @@ def test_ci_uses_bonferroni_alpha_across_treatments():
 
 
 def test_sparse_cells_use_fisher_exact_p_value():
-    comp = fixed((0, 50), (4, 50)).comparisons[0]
+    from ablift.reporting import build_markdown_report
+
+    res = fixed((0, 50), (4, 50))
+    comp = res.comparisons[0]
     expected = fisher_exact([[4, 46], [0, 50]], alternative="two-sided").pvalue
     assert comp.raw_p_value == pytest.approx(expected, rel=1e-9)
     # The normal approximation gives p ~= 0.04 here; the exact test does not reject.
     assert comp.significant is False
+    assert comp.test_statistic is None
+    report = build_markdown_report(res)
+    assert "Fisher's exact" in report
+    assert "z-statistic" not in report
 
 
 def test_sparse_cells_raise_risk_flag():

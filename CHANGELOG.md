@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ablift power`: power analysis for a fixed sample size. Give `--relative-mde` to get the power, or leave it out to get the minimum detectable effect at `--power` (default 0.8). It supports conversion rate and ARPU, the `fixed` (default) and `sequential` methods, and Bonferroni across `--n-variants`. Fixed-method power matches statsmodels `NormalIndPower`, and `duration`'s sample size round-trips to the planned power and MDE. The output contract is `ablift schema power-output`.
 
 ### Fixed
+- `ablift doctor` now enforces minimum dependency versions (`click>=8.0`, `numpy>=1.22`, `openpyxl>=3.1.0`) instead of passing whenever a package is merely installed.
+- Malformed `--expected-split` CLI flag values now exit with code `2` (usage error) rather than `1`.
+- `ablift analyze` now rejects unknown top-level JSON fields (matching `ablift schema analyze-input` instead of silently ignoring typos), and no longer reports `decision_policy.enabled: false` from `pyproject.toml` on `--method sequential` or `--method fixed` runs.
+- Sparse fixed-horizon conversion comparisons using Fisher's exact test now report `test_statistic: null` (and label the test as Fisher's exact in Markdown reports) instead of emitting the unused normal z-statistic.
+- `scripts/render_demo.py` now pins both console width and height so `docs/demo.svg` renders deterministically even under `TERM=dumb`.
 - Very large `--samples` crashed with a Python `MemoryError` traceback (200M samples needs 1.5 GB per arm). Bayesian runs now reject `samples × variants` above 20,000,000 with a message giving the maximum, and any out-of-memory condition becomes a clean `Error:` with exit code 1.
 - `--bootstrap-samples` had no upper bound: 2,000,000 resamples of 40,000 rows ran for minutes with no output. Requests above 1,000,000,000 resampled rows are now a usage error (exit 2) that states the maximum for the data.
 - Fixed-horizon conversion intervals used the Wald formula, which collapses to `[0, 0]` at 0% or 100% conversion (claiming certainty from e.g. 0/10 vs 0/10) and undercovers for rare events. They now use Newcombe's hybrid score interval.

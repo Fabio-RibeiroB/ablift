@@ -170,5 +170,53 @@ class CodexReviewFindings(unittest.TestCase):
             )
 
 
+class PayloadAndCliCorrectnessTests(unittest.TestCase):
+    def test_unknown_top_level_payload_key_is_rejected(self):
+        payload = {
+            "experiment_name": "typo",
+            "primaryMetric": "arpu",
+            "variants": [
+                {"name": "c", "visitors": 1000, "conversions": 40, "is_control": True},
+                {"name": "v1", "visitors": 1000, "conversions": 50},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "Unknown top-level field.*primaryMetric"):
+            parse_payload(payload)
+
+    def test_bayesian_disabled_policy_does_not_leak_into_sequential_or_fixed(self):
+        for method in ("sequential", "fixed"):
+            with self.subTest(method=method):
+                payload = {
+                    "experiment_name": "leak_check",
+                    "method": method,
+                    "decision_policy": {"enabled": False},
+                    "variants": [
+                        {"name": "c", "visitors": 30000, "conversions": 1200, "is_control": True},
+                        {"name": "v1", "visitors": 30000, "conversions": 1410},
+                    ],
+                }
+                result = analyze(parse_payload(payload))
+                self.assertTrue(result.analysis_settings.decision_policy["enabled"])
+                self.assertEqual(
+                    result.analysis_settings.decision_policy["source"],
+                    "implicit_method_defaults",
+                )
+                self.assertIsNotNone(result.recommendation)
+
+    def test_output_help_and_schema_epilog_are_populated(self):
+        from click.testing import CliRunner
+
+        from ablift.cli import cli
+
+        runner = CliRunner()
+        for cmd in ("duration", "power"):
+            res = runner.invoke(cli, [cmd, "--help"])
+            self.assertEqual(res.exit_code, 0, res.output)
+            self.assertIn("Path to output JSON.", res.output)
+        schema_help = runner.invoke(cli, ["schema", "--help"])
+        self.assertEqual(schema_help.exit_code, 0, schema_help.output)
+        self.assertIn("power-output", schema_help.output)
+
+
 if __name__ == "__main__":
     unittest.main()

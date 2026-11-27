@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import math
+import re
 import sys
 import tomllib
 from dataclasses import asdict
@@ -354,6 +355,32 @@ def example_payload() -> dict:
     }
 
 
+_MIN_DEPENDENCIES: tuple[tuple[str, str], ...] = (
+    ("click", ">=8.0"),
+    ("numpy", ">=1.22"),
+    ("openpyxl", ">=3.1.0"),
+)
+
+
+def _version_meets_minimum(installed: str, minimum: str) -> bool:
+    """Return True if PEP 440 version ``installed`` satisfies ``>= minimum``."""
+    min_clean = minimum.removeprefix(">=").strip()
+    inst_match = re.match(r"^\s*(\d+(?:\.\d+)*)(.*)$", installed)
+    min_match = re.match(r"^\s*(\d+(?:\.\d+)*)", min_clean)
+    if not inst_match or not min_match:
+        return False
+    inst_parts = [int(p) for p in inst_match.group(1).split(".")]
+    min_parts = [int(p) for p in min_match.group(1).split(".")]
+    width = max(len(inst_parts), len(min_parts))
+    inst_tuple = tuple(inst_parts + [0] * (width - len(inst_parts)))
+    min_tuple = tuple(min_parts + [0] * (width - len(min_parts)))
+    if inst_tuple != min_tuple:
+        return inst_tuple > min_tuple
+    suffix = inst_match.group(2).strip().lower()
+    # A pre-release (e.g. 1.22.0a1 / 1.22.0rc1 / 1.22.0.dev0) sorts below the final release.
+    return not bool(re.match(r"^(?:\.?(?:a|b|rc|dev)\d*)", suffix))
+
+
 def run_doctor() -> dict:
     checks = []
 
@@ -367,13 +394,13 @@ def run_doctor() -> dict:
         }
     )
 
-    for dep, required in [("numpy", ">=1.22"), ("openpyxl", ">=3.1.0")]:
+    for dep, required in _MIN_DEPENDENCIES:
         try:
             version = importlib.metadata.version(dep)
             checks.append(
                 {
                     "name": f"dependency_{dep}",
-                    "passed": True,
+                    "passed": _version_meets_minimum(version, required),
                     "detail": version,
                     "required": required,
                 }
@@ -601,7 +628,7 @@ def analyze(
         try:
             parsed_expected_split = _parse_expected_split_option(expected_split)
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise click.UsageError(str(exc)) from exc
 
     defaults = {
         "experiment_name": experiment_name,
@@ -751,7 +778,13 @@ _METRIC_SCOPED = (*_CONVERSION_ONLY, *_ARPU_ONLY)
 @click.option(
     "--max-days", type=int, default=None, help="Bayesian search horizon in days. [default: 60]"
 )
-@click.option("--output", "output_path", required=False, type=click.Path())
+@click.option(
+    "--output",
+    "output_path",
+    required=False,
+    type=click.Path(),
+    help="Path to output JSON. If omitted, writes to stdout.",
+)
 @click.option(
     "--input",
     "input_path",
@@ -1066,7 +1099,13 @@ Examples:
     default=None,
     help="mSPRT mixing parameter (sequential only). Defaults to 10% of the baseline.",
 )
-@click.option("--output", "output_path", type=click.Path(), default=None)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(),
+    default=None,
+    help="Path to output JSON. If omitted, writes to stdout.",
+)
 def power(
     metric: str,
     method: str,
@@ -1147,6 +1186,7 @@ Examples:
   ablift schema analyze-output
   ablift schema duration-input
   ablift schema duration-output
+  ablift schema power-output
   ablift schema --all
   ablift schema analyze-input --output analyze-input.schema.json
 """
