@@ -18,6 +18,9 @@ class VariantInput:
     denominator_sum: float | None = None
     denominator_sum_squares: float | None = None
     numerator_denominator_sum: float | None = None
+    covariate_sum: float | None = None
+    covariate_sum_squares: float | None = None
+    outcome_covariate_sum: float | None = None
 
 
 @dataclass

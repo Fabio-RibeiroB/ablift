@@ -24,12 +24,65 @@ from .models import (
 )
 from .stats import (
     aggregated_arpu_tail_diagnostics,
+    compute_cuped_adjustment,
     delta_ratio_z_test,
     ratio_mean_and_var,
     validate_ratio_aggregates,
 )
 
 SUPPORTED_METRICS = {"conversion_rate", "arpu", "ratio"}
+
+
+def _has_cuped(variants: list[VariantInput]) -> bool:
+    return any(
+        v.covariate_sum is not None
+        or v.covariate_sum_squares is not None
+        or v.outcome_covariate_sum is not None
+        for v in variants
+    )
+
+
+def _compute_cuped_for_input(
+    inp: AnalysisInput,
+) -> tuple[dict[str, tuple[float, float, float, int]], dict[str, Any]]:
+    if inp.primary_metric not in {"conversion_rate", "arpu"}:
+        raise ValueError(
+            "CUPED variance reduction is supported for 'conversion_rate' and 'arpu' "
+            f"primary metrics, not {inp.primary_metric!r}."
+        )
+    names = [v.name for v in inp.variants]
+    if len(set(names)) != len(names):
+        raise ValueError("CUPED requires unique variant names.")
+    entries: list[tuple[str, bool, int, float, float, float, float, float]] = []
+    for variant in inp.variants:
+        if (
+            variant.covariate_sum is None
+            or variant.covariate_sum_squares is None
+            or variant.outcome_covariate_sum is None
+        ):
+            raise ValueError(
+                f"CUPED requires covariate_sum, covariate_sum_squares, and "
+                f"outcome_covariate_sum for every variant (incomplete for {variant.name!r})."
+            )
+        if inp.primary_metric == "conversion_rate":
+            y_sum = float(variant.conversions)
+            y_sum_sq = float(variant.conversions)
+        else:
+            y_sum = float(variant.revenue_sum or 0.0)
+            y_sum_sq = float(variant.revenue_sum_squares or 0.0)
+        entries.append(
+            (
+                variant.name,
+                variant.is_control,
+                variant.visitors,
+                y_sum,
+                y_sum_sq,
+                variant.covariate_sum,
+                variant.covariate_sum_squares,
+                variant.outcome_covariate_sum,
+            )
+        )
+    return compute_cuped_adjustment(entries)
 
 
 def _variant_ratio_mean_and_var(
@@ -417,6 +470,9 @@ def validate_input(inp: AnalysisInput) -> None:
     elif inp.primary_metric == "ratio":
         _validate_variant_metrics(inp.variants, "ratio", "Primary metric")
 
+    if _has_cuped(inp.variants):
+        _compute_cuped_for_input(inp)
+
     for item in inp.guardrails:
         _validate_guardrail_item(inp, item)
 
@@ -434,10 +490,17 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     control = [v for v in inp.variants if v.is_control][0]
     treatments = [v for v in inp.variants if not v.is_control]
 
+    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None
+    cuped_diag: dict[str, Any] | None = None
+    if _has_cuped(inp.variants):
+        cuped_arms, cuped_diag = _compute_cuped_for_input(inp)
+
     guardrail_results = evaluate_guardrails(inp)
     guardrails_passed = all(g.passed for g in guardrail_results)
     srm_result = evaluate_srm(inp.variants, expected_split=inp.expected_split)
-    comparisons, bayesian_arms = _run_metric_comparisons(inp, control, treatments)
+    comparisons, bayesian_arms = _run_metric_comparisons(
+        inp, control, treatments, cuped_arms=cuped_arms
+    )
     secondary_results = evaluate_secondary_metrics(inp)
 
     recommendation = recommend(
@@ -449,6 +512,15 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     )
 
     input_interpretation = dict(inp.input_interpretation)
+    if cuped_diag is not None:
+        input_interpretation["cuped"] = cuped_diag
+        if (
+            cuped_diag.get("covariate_imbalanced")
+            and recommendation is not None
+            and "covariate_imbalance" not in recommendation.risk_flags
+        ):
+            recommendation.risk_flags.append("covariate_imbalance")
+
     if inp.primary_metric == "arpu":
         tail_diag = input_interpretation.get("arpu_tail_diagnostics")
         if not isinstance(tail_diag, dict):
@@ -616,11 +688,21 @@ def evaluate_srm(
 
 
 def _run_metric_comparisons(
-    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+    inp: AnalysisInput,
+    control: VariantInput,
+    treatments: list[VariantInput],
+    *,
+    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None,
 ) -> tuple[list[ComparisonResult], list[BayesianArmSummary] | None]:
     if inp.method == "bayesian":
-        comparisons, bayesian_arms = _analyze_bayesian_joint(inp, control, treatments)
+        comparisons, bayesian_arms = _analyze_bayesian_joint(
+            inp, control, treatments, cuped_arms=cuped_arms
+        )
         return comparisons, bayesian_arms
+    if cuped_arms is not None:
+        if inp.method == "fixed":
+            return analyze_fixed_cuped(inp, control, treatments, cuped_arms), None
+        return analyze_sequential_cuped(inp, control, treatments, cuped_arms), None
     if inp.method == "fixed":
         if inp.primary_metric == "conversion_rate":
             return analyze_fixed_conversion(inp, control, treatments), None
@@ -922,11 +1004,27 @@ def _summarize_bayesian_draws(
 
 
 def _draw_bayesian_samples(
-    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+    inp: AnalysisInput,
+    control: VariantInput,
+    treatments: list[VariantInput],
+    *,
+    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None,
 ) -> tuple[float, list[float], np.ndarray, list[np.ndarray]]:
     rng = np.random.default_rng(inp.random_seed)
 
-    if inp.primary_metric == "conversion_rate":
+    if cuped_arms is not None:
+        c_mean, _c_var, c_ss, c_n = cuped_arms[control.name]
+        control_samples = sample_mean_posterior_from_moments(c_n, c_mean, c_ss, inp.samples, rng)
+        control_rate = c_mean
+        treatment_rates = []
+        treatment_samples_list = []
+        for t in treatments:
+            t_mean, _t_var, t_ss, t_n = cuped_arms[t.name]
+            treatment_rates.append(t_mean)
+            treatment_samples_list.append(
+                sample_mean_posterior_from_moments(t_n, t_mean, t_ss, inp.samples, rng)
+            )
+    elif inp.primary_metric == "conversion_rate":
         alpha_prior = 1.0
         beta_prior = 1.0
         control_samples = rng.beta(
@@ -988,10 +1086,14 @@ def _draw_bayesian_samples(
 
 
 def _analyze_bayesian_joint(
-    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+    inp: AnalysisInput,
+    control: VariantInput,
+    treatments: list[VariantInput],
+    *,
+    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None,
 ) -> tuple[list[ComparisonResult], list[BayesianArmSummary]]:
     control_rate, treatment_rates, control_samples, treatment_samples_list = _draw_bayesian_samples(
-        inp, control, treatments
+        inp, control, treatments, cuped_arms=cuped_arms
     )
     return _summarize_bayesian_draws(
         variants=inp.variants,
@@ -1015,7 +1117,15 @@ def analyze_bayesian_conversion(
 def build_analysis_settings(
     inp: AnalysisInput, *, input_interpretation: dict[str, Any] | None = None
 ) -> AnalysisSettings:
-    if inp.method == "bayesian" and inp.primary_metric == "conversion_rate":
+    if inp.method == "bayesian" and _has_cuped(inp.variants):
+        priors: dict[str, Any] = {
+            "family": "cuped_normal_inverse_gamma",
+            "mu0": 0.0,
+            "kappa0": 1e-6,
+            "alpha0": 1.0,
+            "beta0": 1.0,
+        }
+    elif inp.method == "bayesian" and inp.primary_metric == "conversion_rate":
         priors = {
             "family": "beta_binomial",
             "alpha_prior": 1.0,
@@ -1246,6 +1356,34 @@ def analyze_sequential_ratio(
     return out
 
 
+def analyze_sequential_cuped(
+    inp: AnalysisInput,
+    control: VariantInput,
+    treatments: list[VariantInput],
+    cuped_arms: dict[str, tuple[float, float, float, int]],
+) -> list[ComparisonResult]:
+    """Always-valid mSPRT using CUPED-adjusted means and variances."""
+    alpha_adj = per_comparison_alpha(inp.alpha, len(treatments))
+    c_mean, c_var, _c_ss, c_n = cuped_arms[control.name]
+    out: list[ComparisonResult] = []
+    for treatment in treatments:
+        t_mean, t_var, _t_ss, t_n = cuped_arms[treatment.name]
+        se = math.sqrt(max((c_var / c_n) + (t_var / t_n), 1e-18))
+        out.append(
+            _sequential_comparison(
+                inp=inp,
+                control=control,
+                treatment=treatment,
+                metric=inp.primary_metric,
+                control_value=c_mean,
+                treatment_value=t_mean,
+                se=se,
+                alpha_adj=alpha_adj,
+            )
+        )
+    return out
+
+
 def adjusted_difference_se(x1: int, n1: int, x2: int, n2: int) -> float:
     """Agresti-Caffo standard error for a difference in proportions.
 
@@ -1393,20 +1531,18 @@ def student_t_ppf(q: float, df: float) -> float:
     return t_val
 
 
-def welch_t_test(
+def welch_t_test_from_moments(
     n1: int,
-    sum1: float,
-    sum_sq1: float,
+    mean1: float,
+    var1: float,
     n2: int,
-    sum2: float,
-    sum_sq2: float,
+    mean2: float,
+    var2: float,
 ) -> tuple[float, float | None, float | None, float]:
-    """Welch's two-sample t-test from aggregate sums and sums of squares.
+    """Welch's two-sample t-test from sample sizes, means, and sample variances.
 
     Returns ``(raw_p_value, t_statistic, welch_satterthwaite_df, standard_error)``.
     """
-    mean1, var1 = mean_and_var_from_aggregates(n1, sum1, sum_sq1)
-    mean2, var2 = mean_and_var_from_aggregates(n2, sum2, sum_sq2)
     diff = mean2 - mean1
 
     if n1 < 2 or n2 < 2:
@@ -1427,6 +1563,23 @@ def welch_t_test(
     df = (v * v) / df_denom
     raw_p = student_t_two_sided_p(t_stat, df)
     return raw_p, t_stat, df, se
+
+
+def welch_t_test(
+    n1: int,
+    sum1: float,
+    sum_sq1: float,
+    n2: int,
+    sum2: float,
+    sum_sq2: float,
+) -> tuple[float, float | None, float | None, float]:
+    """Welch's two-sample t-test from aggregate sums and sums of squares.
+
+    Returns ``(raw_p_value, t_statistic, welch_satterthwaite_df, standard_error)``.
+    """
+    mean1, var1 = mean_and_var_from_aggregates(n1, sum1, sum_sq1)
+    mean2, var2 = mean_and_var_from_aggregates(n2, sum2, sum_sq2)
+    return welch_t_test_from_moments(n1, mean1, var1, n2, mean2, var2)
 
 
 def analyze_fixed_conversion(
@@ -1474,61 +1627,88 @@ def analyze_fixed_conversion(
     return out
 
 
+def _fixed_welch_comparison(
+    *,
+    inp: AnalysisInput,
+    control_name: str,
+    treatment_name: str,
+    metric: str,
+    n1: int,
+    mean1: float,
+    var1: float,
+    n2: int,
+    mean2: float,
+    var2: float,
+    n_comparisons: int,
+    alpha_adj: float,
+) -> ComparisonResult:
+    diff = mean2 - mean1
+    raw_p, t_stat, df, se = welch_t_test_from_moments(n1, mean1, var1, n2, mean2, var2)
+    adj_p = min(1.0, raw_p * n_comparisons)
+    significant = bool(adj_p <= inp.alpha)
+
+    ci_low: float | None
+    ci_high: float | None
+    if df is None:
+        ci_low, ci_high = None, None
+    elif se <= 0.0:
+        ci_low, ci_high = float(diff), float(diff)
+    else:
+        t_crit = student_t_ppf(1.0 - alpha_adj / 2.0, df)
+        ci_low = float(diff - t_crit * se)
+        ci_high = float(diff + t_crit * se)
+
+    return ComparisonResult(
+        treatment=treatment_name,
+        control=control_name,
+        metric=metric,
+        control_rate=mean1,
+        treatment_rate=mean2,
+        absolute_lift=diff,
+        relative_lift=diff / max(abs(mean1), 1e-12),
+        p_value=float(adj_p),
+        raw_p_value=float(raw_p),
+        test_statistic=float(t_stat) if t_stat is not None else None,
+        degrees_of_freedom=float(df) if df is not None else None,
+        significant=significant,
+        ci_low=ci_low,
+        ci_high=ci_high,
+    )
+
+
 def analyze_fixed_arpu(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
 ) -> list[ComparisonResult]:
     """Fixed-horizon Welch's two-sample t-test with Bonferroni-adjusted CIs."""
     n_comparisons = len(treatments)
     alpha_adj = per_comparison_alpha(inp.alpha, n_comparisons)
-    c_sum = float(control.revenue_sum or 0.0)
-    c_sum_sq = float(control.revenue_sum_squares or 0.0)
-    c_mean, _ = mean_and_var_from_aggregates(control.visitors, c_sum, c_sum_sq)
+    c_mean, c_var = mean_and_var_from_aggregates(
+        control.visitors,
+        float(control.revenue_sum or 0.0),
+        float(control.revenue_sum_squares or 0.0),
+    )
 
     out: list[ComparisonResult] = []
     for treatment in treatments:
-        t_sum = float(treatment.revenue_sum or 0.0)
-        t_sum_sq = float(treatment.revenue_sum_squares or 0.0)
-        t_mean, _ = mean_and_var_from_aggregates(treatment.visitors, t_sum, t_sum_sq)
-        diff = t_mean - c_mean
-
-        raw_p, t_stat, df, se = welch_t_test(
-            control.visitors,
-            c_sum,
-            c_sum_sq,
+        t_mean, t_var = mean_and_var_from_aggregates(
             treatment.visitors,
-            t_sum,
-            t_sum_sq,
+            float(treatment.revenue_sum or 0.0),
+            float(treatment.revenue_sum_squares or 0.0),
         )
-        adj_p = min(1.0, raw_p * n_comparisons)
-        significant = bool(adj_p <= inp.alpha)
-
-        ci_low: float | None
-        ci_high: float | None
-        if df is None:
-            ci_low, ci_high = None, None
-        elif se <= 0.0:
-            ci_low, ci_high = float(diff), float(diff)
-        else:
-            t_crit = student_t_ppf(1.0 - alpha_adj / 2.0, df)
-            ci_low = float(diff - t_crit * se)
-            ci_high = float(diff + t_crit * se)
-
         out.append(
-            ComparisonResult(
-                treatment=treatment.name,
-                control=control.name,
+            _fixed_welch_comparison(
+                inp=inp,
+                control_name=control.name,
+                treatment_name=treatment.name,
                 metric="arpu",
-                control_rate=c_mean,
-                treatment_rate=t_mean,
-                absolute_lift=diff,
-                relative_lift=diff / max(abs(c_mean), 1e-12),
-                p_value=float(adj_p),
-                raw_p_value=float(raw_p),
-                test_statistic=float(t_stat) if t_stat is not None else None,
-                degrees_of_freedom=float(df) if df is not None else None,
-                significant=significant,
-                ci_low=ci_low,
-                ci_high=ci_high,
+                n1=control.visitors,
+                mean1=c_mean,
+                var1=c_var,
+                n2=treatment.visitors,
+                mean2=t_mean,
+                var2=t_var,
+                n_comparisons=n_comparisons,
+                alpha_adj=alpha_adj,
             )
         )
     return out
@@ -1578,6 +1758,63 @@ def analyze_fixed_ratio(
     return out
 
 
+def analyze_fixed_cuped(
+    inp: AnalysisInput,
+    control: VariantInput,
+    treatments: list[VariantInput],
+    cuped_arms: dict[str, tuple[float, float, float, int]],
+) -> list[ComparisonResult]:
+    """Fixed-horizon Welch's two-sample t-test on CUPED-adjusted moments."""
+    n_comparisons = len(treatments)
+    alpha_adj = per_comparison_alpha(inp.alpha, n_comparisons)
+    c_mean, c_var, _c_ss, c_n = cuped_arms[control.name]
+
+    out: list[ComparisonResult] = []
+    for treatment in treatments:
+        t_mean, t_var, _t_ss, t_n = cuped_arms[treatment.name]
+        out.append(
+            _fixed_welch_comparison(
+                inp=inp,
+                control_name=control.name,
+                treatment_name=treatment.name,
+                metric=inp.primary_metric,
+                n1=c_n,
+                mean1=c_mean,
+                var1=c_var,
+                n2=t_n,
+                mean2=t_mean,
+                var2=t_var,
+                n_comparisons=n_comparisons,
+                alpha_adj=alpha_adj,
+            )
+        )
+    return out
+
+
+def sample_mean_posterior_from_moments(
+    n: int,
+    mean: float,
+    ss: float,
+    num_samples: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Normal-Inverse-Gamma posterior mean draws from sample size, mean, and centered SS."""
+    mu0 = 0.0
+    kappa0 = 1e-6
+    alpha0 = 1.0
+    beta0 = 1.0
+
+    kappa_n = kappa0 + n
+    mu_n = (kappa0 * mu0 + n * mean) / kappa_n
+    alpha_n = alpha0 + 0.5 * n
+    beta_n = beta0 + 0.5 * max(ss, 0.0) + (kappa0 * n * ((mean - mu0) ** 2)) / (2 * kappa_n)
+
+    gamma_samples = rng.gamma(shape=alpha_n, scale=1.0, size=num_samples)
+    sigma2_samples = beta_n / np.clip(gamma_samples, 1e-18, None)
+    mu_samples = rng.normal(mu_n, np.sqrt(np.clip(sigma2_samples / kappa_n, 1e-18, None)))
+    return mu_samples
+
+
 def sample_mean_posterior(
     n: int,
     value_sum: float,
@@ -1585,24 +1822,9 @@ def sample_mean_posterior(
     num_samples: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    # Normal-Inverse-Gamma weak prior over unknown mean/variance using aggregate stats.
-    mu0 = 0.0
-    kappa0 = 1e-6
-    alpha0 = 1.0
-    beta0 = 1.0
-
     x_bar = value_sum / max(n, 1)
     ss = max(value_sum_squares - n * (x_bar**2), 0.0)
-
-    kappa_n = kappa0 + n
-    mu_n = (kappa0 * mu0 + n * x_bar) / kappa_n
-    alpha_n = alpha0 + 0.5 * n
-    beta_n = beta0 + 0.5 * ss + (kappa0 * n * ((x_bar - mu0) ** 2)) / (2 * kappa_n)
-
-    gamma_samples = rng.gamma(shape=alpha_n, scale=1.0, size=num_samples)
-    sigma2_samples = beta_n / np.clip(gamma_samples, 1e-18, None)
-    mu_samples = rng.normal(mu_n, np.sqrt(np.clip(sigma2_samples / kappa_n, 1e-18, None)))
-    return mu_samples
+    return sample_mean_posterior_from_moments(n, x_bar, ss, num_samples, rng)
 
 
 def recommend(

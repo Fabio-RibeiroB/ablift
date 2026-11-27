@@ -222,6 +222,8 @@ Each variant row also accepts an optional `expected_share` (positive number) for
 
 For `primary_metric: "arpu"`, each variant also needs `revenue_sum` and `revenue_sum_squares`. For `primary_metric: "ratio"`, each variant needs `numerator_sum`, `numerator_sum_squares`, `denominator_sum`, `denominator_sum_squares`, and `numerator_denominator_sum`.
 
+For **CUPED variance reduction** on `conversion_rate` or `arpu`, include `covariate_sum`, `covariate_sum_squares`, and `outcome_covariate_sum` on every variant (using a strictly pre-experiment covariate `X`), or pass `--covariate-column <name|1-based-index>` on row-level CSV/XLSX inputs. `ablift` estimates a within-arm pooled `theta` (invariant to treatment effects), runs `fixed`, `sequential`, or `bayesian` inference on the CUPED-adjusted arm moments, reports diagnostics (`theta`, `r_squared`, `variance_reduction_pct`, `covariate_balance_p_value`) in `analysis_settings.input_interpretation.cuped`, and flags `covariate_imbalance` if pre-experiment covariate balance fails (`p < 0.001`).
+
 Guardrails (`ablift example-input` prints a full multi-metric example):
 
 - **Statistical per-variant guardrail** (recommended, especially for A/B/n tests): evaluates each treatment arm against control using the active inference method (`bayesian`, `sequential`, or `fixed`) so noisy small-sample fluctuations do not falsely block shipping, and a guardrail failure on one variant does not block shipping another winning variant. `visitors` and `is_control` are inherited from matching primary `variants` when omitted:
@@ -560,7 +562,7 @@ If no explicit Bayesian decision policy is provided, `recommendation` is `null` 
 
 - Aggregated ARPU inputs cannot be winsorized after aggregation (only a CV-based `heavy_tailed_revenue` warning is emitted); pass row-level revenue with `--winsorize Q` (and optionally `--bootstrap-samples N`) when whale outliers are present.
 - mSPRT guarantees assume you re-run the analysis on cumulative data as it arrives. The tool keeps no state between looks.
-- No variance reduction (CUPED) yet.
+- CUPED variance reduction currently supports `conversion_rate` and `arpu` primary metrics (not `ratio`).
 
 ## License
 
