@@ -93,10 +93,20 @@ class ComparisonResult:
     significant: bool | None = None
     probability_beats_control: float | None = None
     expected_loss: float | None = None
+    probability_best: float | None = None
+    multi_arm_expected_loss: float | None = None
     ci_low: float | None = None
     ci_high: float | None = None
     relative_ci_low: float | None = None
     relative_ci_high: float | None = None
+
+
+@dataclass
+class BayesianArmSummary:
+    variant: str
+    is_control: bool
+    probability_best: float
+    multi_arm_expected_loss: float
 
 
 @dataclass
@@ -132,6 +142,7 @@ class AnalysisResult:
     guardrails: list[GuardrailResult]
     srm: SrmResult
     recommendation: Recommendation | None
+    bayesian_arms: list[BayesianArmSummary] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, **asdict(self)}
