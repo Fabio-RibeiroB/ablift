@@ -542,6 +542,15 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
         ):
             recommendation.risk_flags.append("heavy_tailed_revenue")
 
+    if (
+        recommendation is not None
+        and inp.method == "fixed"
+        and inp.primary_metric == "conversion_rate"
+        and cuped_arms is None
+        and any(_is_sparse_table(control, t) for t in treatments)
+    ):
+        recommendation.risk_flags.append("sparse_conversions")
+
     return AnalysisResult(
         experiment_name=inp.experiment_name,
         method=inp.method,
@@ -1581,10 +1590,62 @@ def welch_t_test(
     return welch_t_test_from_moments(n1, mean1, var1, n2, mean2, var2)
 
 
+def _wilson_interval(x: int, n: int, z: float) -> tuple[float, float]:
+    p = x / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2.0 * n)) / denom
+    half = z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n)) / denom
+    return center - half, center + half
+
+
+def newcombe_diff_ci(x1: int, n1: int, x2: int, n2: int, z: float) -> tuple[float, float]:
+    """Newcombe (1998) method 10 hybrid score interval for ``p2 - p1``.
+
+    Unlike the Wald interval it stays non-degenerate at 0% or 100% and keeps near-nominal
+    coverage for rare events; at large counts the two agree.
+    """
+    p1, p2 = x1 / n1, x2 / n2
+    l1, u1 = _wilson_interval(x1, n1, z)
+    l2, u2 = _wilson_interval(x2, n2, z)
+    diff = p2 - p1
+    return (
+        diff - math.sqrt((p2 - l2) ** 2 + (u1 - p1) ** 2),
+        diff + math.sqrt((u2 - p2) ** 2 + (p1 - l1) ** 2),
+    )
+
+
+def fisher_exact_p_value(x1: int, n1: int, x2: int, n2: int) -> float:
+    """Two-sided Fisher exact p-value for a 2x2 table, summing tables no likelier than observed."""
+    successes = x1 + x2
+    total = n1 + n2
+
+    def log_prob(k: int) -> float:  # P(arm 2 has k successes | margins)
+        return _log_comb(n2, k) + _log_comb(n1, successes - k) - _log_comb(total, successes)
+
+    k_min, k_max = max(0, successes - n1), min(successes, n2)
+    observed = log_prob(x2)
+    p = sum(math.exp(lp) for k in range(k_min, k_max + 1) if (lp := log_prob(k)) <= observed + 1e-7)
+    return min(1.0, p)
+
+
+def _log_comb(n: int, k: int) -> float:
+    return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+
+
+def _is_sparse_table(control: VariantInput, treatment: VariantInput) -> bool:
+    """True when any expected 2x2 cell under the pooled null is below 5."""
+    n1, n2 = control.visitors, treatment.visitors
+    pooled = (control.conversions + treatment.conversions) / (n1 + n2)
+    return min(n1, n2) * min(pooled, 1.0 - pooled) < 5.0
+
+
 def analyze_fixed_conversion(
     inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
 ) -> list[ComparisonResult]:
-    """Fixed-horizon two-proportion z-test with unpooled Bonferroni-adjusted CIs."""
+    """Fixed-horizon two-proportion test with Newcombe Bonferroni-adjusted CIs.
+
+    Uses the z-test, or Fisher's exact test when any expected cell count is below 5.
+    """
     n_comparisons = len(treatments)
     alpha_adj = per_comparison_alpha(inp.alpha, n_comparisons)
     z_crit = NormalDist().inv_cdf(1.0 - alpha_adj / 2.0)
@@ -1594,16 +1655,11 @@ def analyze_fixed_conversion(
     for treatment in treatments:
         treatment_rate = treatment.conversions / treatment.visitors
         diff = treatment_rate - control_rate
-        raw_p, z_stat, _ = two_proportion_test(
-            control.conversions,
-            control.visitors,
-            treatment.conversions,
-            treatment.visitors,
-        )
-        unpooled_var = (control_rate * (1.0 - control_rate) / control.visitors) + (
-            treatment_rate * (1.0 - treatment_rate) / treatment.visitors
-        )
-        ci_se = math.sqrt(max(unpooled_var, 0.0))
+        counts = (control.conversions, control.visitors, treatment.conversions, treatment.visitors)
+        raw_p, z_stat, _ = two_proportion_test(*counts)
+        if _is_sparse_table(control, treatment):
+            raw_p = fisher_exact_p_value(*counts)
+        ci_low, ci_high = newcombe_diff_ci(*counts, z_crit)
         adj_p = min(1.0, raw_p * n_comparisons)
 
         out.append(
@@ -1619,8 +1675,8 @@ def analyze_fixed_conversion(
                 raw_p_value=float(raw_p),
                 test_statistic=float(z_stat),
                 significant=bool(adj_p <= inp.alpha),
-                ci_low=float(diff - z_crit * ci_se),
-                ci_high=float(diff + z_crit * ci_se),
+                ci_low=float(ci_low),
+                ci_high=float(ci_high),
             )
         )
     return out
