@@ -42,6 +42,11 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
                 f"  - 95% credible interval (relative lift): "
                 f"[{_fmt_pct(comp.relative_ci_low)}, {_fmt_pct(comp.relative_ci_high)}]"
             )
+    elif method == "fixed":
+        lines.append(
+            f"  - Confidence interval (absolute lift): "
+            f"[{_fmt_float(comp.ci_low)}, {_fmt_float(comp.ci_high)}]"
+        )
     else:
         lines.append(
             f"  - Always-valid confidence interval (absolute lift): "
@@ -61,6 +66,21 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
             lines.append(
                 f"  - Multi-arm expected loss: {_fmt_float(comp.multi_arm_expected_loss, 6)}"
             )
+    elif method == "fixed":
+        if comp.metric == "arpu":
+            lines.append(
+                f"  - Welch t-statistic: {_fmt_float(comp.test_statistic, 4)} "
+                f"(df={_fmt_float(comp.degrees_of_freedom, 2)})"
+            )
+        else:
+            lines.append(f"  - z-statistic: {_fmt_float(comp.test_statistic, 4)}")
+        lines.extend(
+            [
+                f"  - Raw p-value: {_fmt_float(comp.raw_p_value, 6)}",
+                f"  - Adjusted p-value: {_fmt_float(comp.p_value, 6)}",
+                f"  - Significant: `{comp.significant}`",
+            ]
+        )
     else:
         lines.extend(
             [
@@ -129,6 +149,18 @@ def build_markdown_report(result: AnalysisResult) -> str:
                 f"- Random seed: `{settings.random_seed}`",
                 f"- Priors: `{settings.priors}`",
                 f"- Decision policy: `{settings.decision_policy}`",
+            ]
+        )
+    elif result.method == "fixed":
+        mc = settings.multiple_comparisons
+        lines.extend(
+            [
+                f"- Alpha (family-wise): `{settings.alpha}`",
+                f"- Multiple comparisons: `{mc.get('correction')}` across "
+                f"{mc.get('n_comparisons')} comparison(s), "
+                f"alpha per comparison `{mc.get('alpha_per_comparison')}`",
+                "- Horizon assumption: Fixed-horizon (valid for a single planned look only; "
+                "do not peek repeatedly)",
             ]
         )
     else:
