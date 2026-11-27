@@ -26,7 +26,7 @@ make demo      # every bundled example, end to end
   - `docs/demo.svg` no longer matches real CLI output (run `make docs`).
   The same check runs as a pre-commit hook whenever docs, the CLI or examples change.
 - A documented command that is not meant to run (for example one with placeholder paths) goes in a block preceded by `<!-- docs-test: skip -->`.
-- Use [Conventional Commits](https://www.conventionalcommits.org/) (`fix(engine): ...`, `docs(readme): ...`) and add user-facing changes to `CHANGELOG.md` under `[Unreleased]`.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) (`fix(engine): ...`, `docs(readme): ...`). Describe user-facing changes in a changelog fragment, `changes/<issue>.<type>.md`, rather than editing `CHANGELOG.md`; see [changes/README.md](changes/README.md). CI requires a fragment when `ablift/` changes.
 
 ## Releasing
 

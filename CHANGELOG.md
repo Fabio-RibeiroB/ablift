@@ -2,9 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries are assembled from `changes/` fragments with towncrier; see [changes/README.md](changes/README.md).
 
-## [Unreleased]
+<!-- towncrier release notes start -->
+
+## [0.5.0a2] - 2026-11-27
+
+Second pre-release (`pip install --pre ablift`).
 
 ### Added
 - `ablift power`: power analysis for a fixed sample size. Give `--relative-mde` to get the power, or leave it out to get the minimum detectable effect at `--power` (default 0.8). It supports conversion rate and ARPU, the `fixed` (default) and `sequential` methods, and Bonferroni across `--n-variants`. Fixed-method power matches statsmodels `NormalIndPower`, and `duration`'s sample size round-trips to the planned power and MDE. The output contract is `ablift schema power-output`.
