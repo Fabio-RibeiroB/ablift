@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -17,6 +19,15 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run ty check
+      - name: Changelog fragment for code changes
+        if: github.event_name == 'pull_request'
+        run: |
+          base="origin/${{ github.base_ref }}"
+          if git diff --name-only "$base"...HEAD | grep -q '^ablift/'; then
+            uv run towncrier check --compare-with "$base"
+          else
+            echo "No changes under ablift/; no fragment needed."
+          fi
 
   test:
     runs-on: ubuntu-latest
