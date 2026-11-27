@@ -22,6 +22,31 @@ class DurationPlan:
     diagnostics: dict
 
 
+def apportion_n(n_total: int, proportions: Sequence[float]) -> list[int]:
+    """Allocate ``n_total`` across variants using largest-remainder apportionment."""
+    exact = [n_total * p for p in proportions]
+    floors = [math.floor(x) for x in exact]
+    remainder = n_total - sum(floors)
+    order = sorted(range(len(proportions)), key=lambda i: (exact[i] - floors[i], -i), reverse=True)
+    for i in order[:remainder]:
+        floors[i] += 1
+    return floors
+
+
+def allocate_split(n_total_required: float, proportions: Sequence[float]) -> list[int]:
+    """Smallest total, split by ``apportion_n``, giving every arm its required share.
+
+    ``ablift power`` splits a total with the same ``apportion_n``, so feeding the planned
+    total back into ``power`` reproduces these exact arm sizes.
+    """
+    n_total = max(int(math.ceil(n_total_required)), 2 * len(proportions))
+    while True:
+        arms = apportion_n(n_total, proportions)
+        if all(n >= max(2.0, n_total_required * p) for n, p in zip(arms, proportions, strict=True)):
+            return arms
+        n_total += 1
+
+
 def _resolve_split(expected_split: Sequence[float] | None, n_variants: int) -> list[float] | None:
     """Validate and normalize traffic split weights into proportions summing to 1."""
     if expected_split is None:
@@ -182,7 +207,7 @@ def fixed_horizon_duration_conversion(
                 + z_beta * math.sqrt(v_c / p_c + v_t / p_j)
             ) ** 2
             n_total_required = max(n_total_required, numerator / (delta**2))
-        n_by_variant = [int(math.ceil(n_total_required * p_i)) for p_i in proportions]
+        n_by_variant = allocate_split(n_total_required, proportions)
         n_total = sum(n_by_variant)
         n_per_variant = n_by_variant[0]
         estimated_days = n_total / daily_total_traffic
@@ -252,7 +277,7 @@ def sequential_duration_conversion(
             _search_msprt_n(v_c / p_c + v_t / p_j, p2 - p1, tau, alpha_adj, power)
             for p_j in proportions[1:]
         )
-        n_by_variant = [max(2, int(math.ceil(n_total_required * p_i))) for p_i in proportions]
+        n_by_variant = allocate_split(n_total_required, proportions)
         n_total = sum(n_by_variant)
         n_per_variant = n_by_variant[0]
         estimated_days = n_total / daily_total_traffic
@@ -466,7 +491,7 @@ def fixed_horizon_duration_arpu(
         p_c = proportions[0]
         base = (sd**2) * ((z_alpha + z_beta) ** 2) / (delta**2)
         n_total_required = max(base * (1.0 / p_c + 1.0 / p_j) for p_j in proportions[1:])
-        n_by_variant = [int(math.ceil(n_total_required * p_i)) for p_i in proportions]
+        n_by_variant = allocate_split(n_total_required, proportions)
         n_total = sum(n_by_variant)
         n_per_variant = n_by_variant[0]
         estimated_days = n_total / daily_total_traffic
@@ -540,7 +565,7 @@ def sequential_duration_arpu(
             _search_msprt_n(var * (1.0 / p_c + 1.0 / p_j), mu2 - mu1, tau, alpha_adj, power)
             for p_j in proportions[1:]
         )
-        n_by_variant = [max(2, int(math.ceil(n_total_required * p_i))) for p_i in proportions]
+        n_by_variant = allocate_split(n_total_required, proportions)
         n_total = sum(n_by_variant)
         n_per_variant = n_by_variant[0]
         estimated_days = n_total / daily_total_traffic

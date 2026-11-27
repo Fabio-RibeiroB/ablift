@@ -16,7 +16,14 @@ from dataclasses import dataclass
 from statistics import NormalDist
 from typing import Any
 
-from .planning import _arpu_effect, _effect, _msprt_power_for_variance, _resolve_split, _z
+from .planning import (
+    _arpu_effect,
+    _effect,
+    _msprt_power_for_variance,
+    _resolve_split,
+    _z,
+    apportion_n,
+)
 
 _ND = NormalDist()
 
@@ -34,19 +41,14 @@ class PowerResult:
     assumptions: dict[str, Any]
 
 
-def _apportion_n(n_total: int, proportions: Sequence[float]) -> list[int]:
-    """Allocate ``n_total`` across variants using largest-remainder apportionment."""
-    exact = [n_total * p for p in proportions]
-    floors = [math.floor(x) for x in exact]
-    remainder = n_total - sum(floors)
-    order = sorted(range(len(proportions)), key=lambda i: (exact[i] - floors[i], -i), reverse=True)
-    for i in order[:remainder]:
-        floors[i] += 1
-    return floors
-
-
 def _fixed_power_conversion(n_c: int, n_t: int, p1: float, p2: float, alpha_adj: float) -> float:
     """Power of the two-sided two-proportion z-test (both rejection tails)."""
+    if n_c == n_t:  # equal arms: keep the pre-split expression so results are bit-identical
+        p_bar = 0.5 * (p1 + p2)
+        null_term = _z(1 - alpha_adj / 2) * math.sqrt(2 * p_bar * (1 - p_bar))
+        shift = abs(p2 - p1) * math.sqrt(n_c)
+        spread = math.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
+        return _ND.cdf((shift - null_term) / spread) + _ND.cdf((-shift - null_term) / spread)
     p_bar = (n_c * p1 + n_t * p2) / (n_c + n_t)
     se0 = math.sqrt(p_bar * (1 - p_bar) * (1.0 / n_c + 1.0 / n_t))
     se1 = math.sqrt(p1 * (1 - p1) / n_c + p2 * (1 - p2) / n_t)
@@ -57,8 +59,10 @@ def _fixed_power_conversion(n_c: int, n_t: int, p1: float, p2: float, alpha_adj:
 
 def _fixed_power_means(n_c: int, n_t: int, delta: float, sd: float, alpha_adj: float) -> float:
     """Power of the two-sided two-sample z-test for means with equal arm variances."""
-    se = sd * math.sqrt(1.0 / n_c + 1.0 / n_t)
-    shift = abs(delta) / se
+    if n_c == n_t:  # equal arms: keep the pre-split expression so results are bit-identical
+        shift = abs(delta) * math.sqrt(n_c / (2.0 * sd * sd))
+    else:
+        shift = abs(delta) / (sd * math.sqrt(1.0 / n_c + 1.0 / n_t))
     z_alpha = _z(1 - alpha_adj / 2)
     return _ND.cdf(shift - z_alpha) + _ND.cdf(-shift - z_alpha)
 
@@ -94,7 +98,7 @@ def _resolve_arm_sizes(
     if isinstance(n_total, bool) or n_total < min_total:
         raise ValueError(f"n_total must be at least {min_total} (at least 2 users per variant).")
     weights = proportions if proportions is not None else [1.0 / n_variants] * n_variants
-    n_by_variant = _apportion_n(n_total, weights)
+    n_by_variant = apportion_n(n_total, weights)
     if any(n < 2 for n in n_by_variant):
         raise ValueError(
             f"Every variant must receive at least 2 users; got {n_by_variant} for n_total={n_total}."

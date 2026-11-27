@@ -1194,7 +1194,7 @@ def power(
 ) -> None:
     """Power for a given sample size, or the smallest lift it can detect."""
     if (n_per_variant is None) == (n_total is None):
-        raise click.UsageError("Give either --n-per-variant or --n-total (not both).")
+        raise click.UsageError("Give exactly one of --n-per-variant or --n-total.")
     parsed_expected_split = (
         _parse_positional_expected_split(expected_split) if expected_split is not None else None
     )
