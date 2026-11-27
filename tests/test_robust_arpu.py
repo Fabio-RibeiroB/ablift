@@ -158,7 +158,7 @@ class RobustArpuIntegrationAndCliTests(unittest.TestCase):
         raw_payload = build_payload_from_rows(rows, defaults={"method": "fixed"})
         raw_res = analyze(parse_payload(raw_payload))
         self.assertEqual(validate_json_schema(raw_res.to_dict(), get_schema("analyze-output")), [])
-        self.assertIn("heavy_tailed_revenue", raw_res.recommendation.risk_flags)
+        self.assertIn("heavy_tailed_revenue", raw_res.risk_flags)
         raw_report = build_markdown_report(raw_res)
         self.assertIn("heavy_tailed_revenue", raw_report)
 
@@ -168,7 +168,7 @@ class RobustArpuIntegrationAndCliTests(unittest.TestCase):
         )
         win_res = analyze(parse_payload(win_payload))
         self.assertEqual(validate_json_schema(win_res.to_dict(), get_schema("analyze-output")), [])
-        self.assertNotIn("heavy_tailed_revenue", win_res.recommendation.risk_flags)
+        self.assertNotIn("heavy_tailed_revenue", win_res.risk_flags)
         self.assertIn("winsorization", win_res.analysis_settings.input_interpretation)
         self.assertIn("bootstrap_ci", win_res.analysis_settings.input_interpretation)
 
@@ -200,7 +200,7 @@ class RobustArpuIntegrationAndCliTests(unittest.TestCase):
             ],
         }
         heavy_res = analyze(parse_payload(heavy_payload))
-        self.assertIn("heavy_tailed_revenue", heavy_res.recommendation.risk_flags)
+        self.assertIn("heavy_tailed_revenue", heavy_res.risk_flags)
         self.assertTrue(
             heavy_res.analysis_settings.input_interpretation["arpu_tail_diagnostics"][
                 "heavy_tailed"
@@ -230,7 +230,7 @@ class RobustArpuIntegrationAndCliTests(unittest.TestCase):
             ],
         }
         normal_res = analyze(parse_payload(normal_payload))
-        self.assertNotIn("heavy_tailed_revenue", normal_res.recommendation.risk_flags)
+        self.assertNotIn("heavy_tailed_revenue", normal_res.risk_flags)
         self.assertFalse(
             normal_res.analysis_settings.input_interpretation["arpu_tail_diagnostics"][
                 "heavy_tailed"

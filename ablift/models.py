@@ -176,6 +176,7 @@ class AnalysisResult:
     recommendation: Recommendation | None
     bayesian_arms: list[BayesianArmSummary] | None = None
     secondary_metrics: list[SecondaryMetricResult] = field(default_factory=list)
+    risk_flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, **asdict(self)}

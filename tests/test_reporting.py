@@ -68,7 +68,7 @@ class BayesianReportTests(unittest.TestCase):
         self.report = _report()
 
     def test_title_and_sections(self):
-        self.assertTrue(self.report.startswith("# A/B Decision Report: report_exp"))
+        self.assertTrue(self.report.startswith("# A/B Analysis Report: report_exp"))
         for header in ("## Summary", "## Data Quality", "## Variant Comparisons", "## Guardrails"):
             self.assertIn(header, self.report)
 
@@ -159,13 +159,13 @@ class SequentialReportTests(unittest.TestCase):
 
 
 class RecommendationSectionTests(unittest.TestCase):
-    def test_no_policy_not_evaluated(self):
-        report = _report()
-        self.assertIn("- Recommendation: `not_evaluated`", report)
-        self.assertIn("No decision policy was provided", report)
-        self.assertIn("Provide an explicit decision policy", report)
-        self.assertIn("- Decision confidence: n/a", report)
-        self.assertIn("- Risk flags: `none`", report)
+    def test_no_policy_omits_recommendation_lines(self):
+        for method in ("bayesian", "sequential", "fixed"):
+            with self.subTest(method=method):
+                report = _report(method=method)
+                self.assertNotIn("- Recommendation:", report)
+                self.assertNotIn("- Decision confidence:", report)
+                self.assertIn("- Risk flags: `none`", report)
 
     def test_with_policy(self):
         report = _report(decision_policy={"enabled": True, "bayes_prob_beats_control": 0.9})
@@ -175,8 +175,8 @@ class RecommendationSectionTests(unittest.TestCase):
         self.assertNotIn("No decision policy was provided", report)
         self.assertNotIn("- Decision confidence: n/a", report)
 
-    def test_sequential_implicit_policy_has_recommendation(self):
-        report = _report(method="sequential")
+    def test_sequential_opt_in_policy_has_recommendation(self):
+        report = _report(method="sequential", decision_policy={"enabled": True})
         self.assertNotIn("not_evaluated", report)
         self.assertIn("- Decision confidence: 0.", report)
 
@@ -190,7 +190,9 @@ class RecommendationSectionTests(unittest.TestCase):
                 "max_relative_change": 0.05,
             }
         ]
-        report = _report(method="sequential", guardrails=guardrails)
+        report = _report(
+            method="sequential", guardrails=guardrails, decision_policy={"enabled": True}
+        )
         self.assertIn("- Recommendation: `do_not_ship`", report)
         self.assertIn("- Risk flags: `guardrail_failure`", report)
         self.assertIn("- Decision confidence: 1.0000", report)
@@ -201,8 +203,8 @@ class RecommendationSectionTests(unittest.TestCase):
             variants=_variants(("control", 10000, 400), ("v1", 5000, 200)),
         )
         self.assertIn("- SRM passed: `False`", report)
-        self.assertIn("srm_detected", report)
-        self.assertIn("investigate_data_quality", report)
+        self.assertIn("- Risk flags: `srm_detected`", report)
+        self.assertNotIn("investigate_data_quality", report)
 
 
 class GuardrailAndSrmSectionTests(unittest.TestCase):

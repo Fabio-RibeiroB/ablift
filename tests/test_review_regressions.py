@@ -83,6 +83,7 @@ class AdjustedSequentialPValue(unittest.TestCase):
                     {"name": "v1", "visitors": 20000, "conversions": conv},
                     {"name": "v2", "visitors": 20000, "conversions": 400},
                 ],
+                "decision_policy": {"enabled": True},
             }
             res = analyze(parse_payload(payload))
             for comp in res.comparisons:
@@ -183,8 +184,8 @@ class PayloadAndCliCorrectnessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown top-level field.*primaryMetric"):
             parse_payload(payload)
 
-    def test_bayesian_disabled_policy_does_not_leak_into_sequential_or_fixed(self):
-        for method in ("sequential", "fixed"):
+    def test_disabled_policy_suppresses_recommendation_for_every_method(self):
+        for method in ("bayesian", "sequential", "fixed"):
             with self.subTest(method=method):
                 payload = {
                     "experiment_name": "leak_check",
@@ -196,12 +197,40 @@ class PayloadAndCliCorrectnessTests(unittest.TestCase):
                     ],
                 }
                 result = analyze(parse_payload(payload))
-                self.assertTrue(result.analysis_settings.decision_policy["enabled"])
+                self.assertFalse(result.analysis_settings.decision_policy["enabled"])
                 self.assertEqual(
-                    result.analysis_settings.decision_policy["source"],
-                    "implicit_method_defaults",
+                    result.analysis_settings.decision_policy["source"], "decision_policy"
                 )
-                self.assertIsNotNone(result.recommendation)
+                self.assertIsNone(result.recommendation)
+
+    def test_no_policy_means_no_recommendation_for_every_method(self):
+        for method in ("bayesian", "sequential", "fixed"):
+            with self.subTest(method=method):
+                payload = {
+                    "method": method,
+                    "variants": [
+                        {"name": "c", "visitors": 30000, "conversions": 1200, "is_control": True},
+                        {"name": "v1", "visitors": 30000, "conversions": 1410},
+                    ],
+                }
+                result = analyze(parse_payload(payload))
+                self.assertIsNone(result.recommendation)
+                self.assertFalse(result.analysis_settings.decision_policy["enabled"])
+                self.assertEqual(result.risk_flags, [])
+
+    def test_enabled_policy_recommends_for_every_method(self):
+        for method in ("bayesian", "sequential", "fixed"):
+            with self.subTest(method=method):
+                payload = {
+                    "method": method,
+                    "decision_policy": {"enabled": True},
+                    "variants": [
+                        {"name": "c", "visitors": 30000, "conversions": 1200, "is_control": True},
+                        {"name": "v1", "visitors": 30000, "conversions": 1410},
+                    ],
+                }
+                result = analyze(parse_payload(payload))
+                self.assertEqual(result.recommendation.action, "ship_v1")
 
     def test_output_help_and_schema_epilog_are_populated(self):
         from click.testing import CliRunner

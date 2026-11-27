@@ -90,7 +90,8 @@ class StdinCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         data = json.loads(result.output)
         self.assertEqual(data["experiment_name"], "checkout_button_color")
-        self.assertIsNotNone(data["recommendation"])
+        self.assertIsNone(data["recommendation"])
+        self.assertIsInstance(data["risk_flags"], list)
 
     def test_analyze_stdin_csv_aggregated_defaults_name_to_stdin(self):
         with tempfile.TemporaryDirectory() as tmp:

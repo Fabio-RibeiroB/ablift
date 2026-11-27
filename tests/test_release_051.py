@@ -20,6 +20,7 @@ def sequential(c_conv, t_conv, n=10_000):
             {
                 "method": "sequential",
                 "primary_metric": "conversion_rate",
+                "decision_policy": {"enabled": True},
                 "variants": [
                     {"name": "control", "visitors": n, "conversions": c_conv, "is_control": True},
                     {"name": "v1", "visitors": n, "conversions": t_conv},

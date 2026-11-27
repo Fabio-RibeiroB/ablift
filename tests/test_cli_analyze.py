@@ -77,9 +77,8 @@ class AnalyzeCliTests(unittest.TestCase):
             ("arpu_sequential.csv", "arpu", ["--method", "sequential"]),
         ]
         for name, metric, extra in cases:
-            result = runner.invoke(
-                cli, ["analyze", "--input", str(root / name), "--samples", "2000", *extra]
-            )
+            sampling = [] if "sequential" in extra else ["--samples", "2000"]
+            result = runner.invoke(cli, ["analyze", "--input", str(root / name), *sampling, *extra])
             self.assertEqual(result.exit_code, 0, f"{name}: {result.output}")
             payload = json.loads(result.output)
             self.assertEqual(payload["analysis_settings"]["primary_metric"], metric, name)
@@ -156,7 +155,7 @@ class AnalyzeConfigTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Examples:", result.output)
         self.assertIn("ablift analyze --input experiment.csv", result.output)
-        self.assertIn("--enable-recommendation --prob-threshold 0.9", result.output)
+        self.assertIn("--recommend --prob-threshold 0.9", result.output)
 
     def test_analyze_surfaces_actionable_column_error(self):
         runner = CliRunner()
@@ -194,6 +193,7 @@ class AnalyzeExpectedSplitCliTests(unittest.TestCase):
                             "sequential",
                             "--expected-split",
                             split_arg,
+                            "--recommend",
                         ],
                     )
                     self.assertEqual(result.exit_code, 0, result.output)
@@ -301,7 +301,7 @@ class AnalyzeExpectedSplitCliTests(unittest.TestCase):
                 with self.subTest(name=payload["experiment_name"]):
                     path = Path(tmp) / f"in_{idx}.json"
                     path.write_text(json.dumps(payload), encoding="utf-8")
-                    result = runner.invoke(cli, ["analyze", "--input", str(path)])
+                    result = runner.invoke(cli, ["analyze", "--input", str(path), "--recommend"])
                     self.assertEqual(result.exit_code, 0, result.output)
                     data = json.loads(result.output)
                     self.assertTrue(data["srm"]["passed"])

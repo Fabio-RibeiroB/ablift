@@ -10,7 +10,7 @@ mkdir -p "$OUT_DIR"
 run() { echo "+ ablift $*" >&2; uv run --project "$ROOT_DIR" ablift "$@"; }
 
 run analyze --input "$EX/conversion_multivariant.csv" \
-  --enable-recommendation --prob-threshold 0.95 --max-expected-loss 0.001 \
+  --recommend --prob-threshold 0.95 --max-expected-loss 0.001 \
   --output "$OUT_DIR/conversion_bayes_output.json" --report "$OUT_DIR/conversion_bayes_report.md"
 
 run analyze --input "$EX/conversion_multivariant.csv" --method sequential \

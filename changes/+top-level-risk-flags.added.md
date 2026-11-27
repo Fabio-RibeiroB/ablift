@@ -1,0 +1,1 @@
+`ablift analyze` output now has a top-level `risk_flags` list that is always present, even when no recommendation is requested. It reports data-quality and experiment risks such as `srm_detected`, `guardrail_failure`, `covariate_imbalance`, `heavy_tailed_revenue` and `sparse_conversions`.

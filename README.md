@@ -9,18 +9,18 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
-**Turn A/B test numbers into a ship / don't-ship decision from the command line, with JSON output an AI agent can act on.**
+**Statistical analysis and planning for A/B/n experiments from the command line, with structured JSON output for agents and pipelines.**
 
-![ablift analyzing a three-variant checkout test and recommending ship_new_checkout](https://raw.githubusercontent.com/Fabio-RibeiroB/ablift/main/docs/demo.svg)
+![ablift running a sequential analysis on a three-variant checkout test](https://raw.githubusercontent.com/Fabio-RibeiroB/ablift/main/docs/demo.svg)
 
 > **Alpha.** The statistics are tested against reference implementations, but the CLI and output format may still change before 1.0.
 
 ## Why ablift
 
-- **Decisions, not just p-values.** Every analysis ends in an action (`ship_<variant>`, `continue_collecting_data`, `do_not_ship`, `stop_and_rollback`, `investigate_data_quality`) with a confidence score and risk flags.
+- **Rigorous estimates, not a black box.** Computes lifts, intervals, Bayesian posteriors (probability to beat control, expected loss, `probability_best`), always-valid sequential e-values (mSPRT), and fixed-horizon p-values. Pass `--recommend` when you also want an opt-in rule-based recommendation.
 - **Look at results as often as you like.** Sequential mode uses mSPRT with always-valid confidence intervals, so checking daily does not inflate false positives.
-- **Catches bad data before you ship.** Sample ratio mismatch, sparse conversion counts, whale-dominated revenue and pre-experiment covariate imbalance are all flagged.
-- **Built for agents and pipelines.** JSON in, JSON out, a published JSON Schema, stdin support, clean errors and stable exit codes.
+- **Catches bad data automatically.** Sample ratio mismatch, sparse conversion counts, whale-dominated revenue, and pre-experiment covariate imbalance are always checked and reported in top-level `risk_flags`.
+- **Built for agents and pipelines.** JSON in, JSON out, published JSON Schemas, stdin support, clean errors, and stable exit codes.
 
 ## Install
 
