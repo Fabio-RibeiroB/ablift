@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-11-22
+## [0.5.1] - Unreleased
+
+First published as pre-release `0.5.1a1` for early testing (`pip install --pre ablift`).
 
 ### Added
 - MIT `LICENSE` and license metadata in the package.

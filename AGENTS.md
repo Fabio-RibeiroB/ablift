@@ -26,3 +26,4 @@ make demo                 # run example demo
 1. Bump `version` in `pyproject.toml`, run `uv lock`, and move `CHANGELOG.md` entries under a new `## [X.Y.Z] - date` heading.
 2. Merge to `main`, then push a matching tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. `.github/workflows/release.yml` checks the tag matches the version, tests, builds, smoke-tests the wheel, publishes to PyPI (trusted publishing, environment `pypi`) and creates the GitHub release from the changelog section.
+4. Pre-releases: use a PEP 440 version such as `0.5.1a1` or `0.6.0rc1` and tag `v0.5.1a1`. The workflow marks the GitHub release as a pre-release; `pip install ablift` ignores it unless `--pre` is passed.
