@@ -1,0 +1,33 @@
+name: Bug report
+description: Wrong numbers, a crash, or a confusing error
+labels: [bug]
+body:
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact `ablift ...` command you ran.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: Minimal input
+      description: The smallest JSON or CSV that reproduces the problem (anonymise names and numbers if needed).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      description: What you expected, what you got, and a reference value if you have one (scipy, statsmodels, another tool).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `ablift --version`.
+    validations:
+      required: true

@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: If you use ablift in research or a publication, please cite it as below.
+title: "ablift: Bayesian and sequential A/B/n experiment decisions from the command line"
+type: software
+authors:
+  - name: Fabio-RibeiroB
+repository-code: https://github.com/Fabio-RibeiroB/ablift
+license: MIT
+keywords:
+  - ab-testing
+  - experimentation
+  - bayesian
+  - sequential-testing
+  - msprt
+  - cuped

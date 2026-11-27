@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+- README rewritten as a front page with a demo image rendered from a real run; reference material moved to `docs/` (inputs, methods, duration planning, agents).
+- `tests/test_docs.py`, also run as a pre-commit hook, fails when a CLI command or option is undocumented, a documented example stops running, a link breaks, the install line does not match the release state, or the demo image is stale (`make docs`).
+- Added `CONTRIBUTING.md`, issue and pull request templates, Dependabot for GitHub Actions and `CITATION.cff`.
+
 ### Fixed
 - Fixed-horizon conversion intervals used the Wald formula, which collapses to `[0, 0]` at 0% or 100% conversion (claiming certainty from e.g. 0/10 vs 0/10) and undercovers for rare events. They now use Newcombe's hybrid score interval.
 - Fixed-horizon conversion p-values used the normal approximation even for sparse tables, so 0/50 vs 4/50 was called significant (p ≈ 0.04). When any expected cell count is below 5, Fisher's exact test is used instead (p ≈ 0.12), and the `sparse_conversions` risk flag is raised.
