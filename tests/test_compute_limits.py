@@ -32,8 +32,8 @@ def test_bayesian_samples_over_memory_budget_is_a_clean_error():
     assert res.exception is None or isinstance(res.exception, SystemExit)
 
 
-def test_samples_limit_only_applies_to_bayesian():
-    # samples is unused outside Bayesian mode, so a huge value must not be rejected there.
+def test_samples_outside_bayesian_is_rejected_as_unused_not_over_budget():
+    # samples is unused outside Bayesian mode: the error says so rather than citing memory.
     payload = {
         "method": "sequential",
         "samples": 10**9,
@@ -42,7 +42,8 @@ def test_samples_limit_only_applies_to_bayesian():
             {"name": "t", "visitors": 30000, "conversions": 1410},
         ],
     }
-    assert analyze(parse_payload(payload)).comparisons[0].significant is True
+    with pytest.raises(ValueError, match="samples only applies when method is 'bayesian'"):
+        analyze(parse_payload(payload))
 
 
 def test_bootstrap_over_budget_is_a_usage_error(tmp_path):

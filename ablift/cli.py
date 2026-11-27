@@ -235,6 +235,25 @@ def _reject_row_only_options_for_json(merged_defaults: dict[str, Any]) -> None:
         )
 
 
+def _drop_unused_method_settings(
+    settings: dict[str, Any], method: str, *, bootstrap: bool
+) -> dict[str, Any]:
+    """Drop method-scoped settings the effective method would not use.
+
+    Applied to ``[tool.ablift]`` project defaults (e.g. ``samples`` for Bayesian runs) and
+    to an input file whose method ``--method`` overrides: neither is an explicit request
+    for this run, so neither may trip the engine's method-scoped rejections.
+    """
+    unused: set[str] = set()
+    if method != "bayesian":
+        unused.add("samples")
+        if not bootstrap:
+            unused.add("random_seed")
+    if method != "sequential":
+        unused.add("sequential_tau")
+    return {k: v for k, v in settings.items() if k not in unused}
+
+
 def _load_analysis_payload(
     *,
     input_path: str,
@@ -243,13 +262,32 @@ def _load_analysis_payload(
     defaults: dict[str, Any],
     config_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    merged_defaults = _deep_merge(config_payload, defaults)
+    bootstrap = defaults.get("bootstrap_samples") is not None
+
+    def load_json(raw: str) -> dict[str, Any]:
+        _reject_row_only_options_for_json(_deep_merge(config_payload, defaults))
+        input_payload = json.loads(raw)
+        input_method = input_payload.get("method") if isinstance(input_payload, dict) else None
+        method = str(
+            defaults.get("method") or input_method or config_payload.get("method") or "bayesian"
+        )
+        if defaults.get("method") is not None and input_method not in {None, method}:
+            # Like `duration`: --method overrides the file's method, so the file's settings
+            # scoped to its own method were written for a different run.
+            input_payload = _drop_unused_method_settings(input_payload, method, bootstrap=bootstrap)
+        scoped = _drop_unused_method_settings(config_payload, method, bootstrap=bootstrap)
+        return _merge_json_payload(input_payload, scoped, defaults)
+
+    method = defaults.get("method") or config_payload.get("method") or "bayesian"
+    merged_defaults = _deep_merge(
+        _drop_unused_method_settings(config_payload, str(method), bootstrap=bootstrap),
+        defaults,
+    )
     if input_path == "-":
         raw = _read_stdin()
         fmt = input_format or "json"
         if fmt == "json":
-            _reject_row_only_options_for_json(merged_defaults)
-            return _merge_json_payload(json.loads(raw), config_payload, defaults)
+            return load_json(raw)
         rows = read_csv_text(raw)
         payload = build_payload_from_rows(rows, defaults=merged_defaults)
         if payload.get("experiment_name") in {None, "", "table_input_experiment"}:
@@ -258,9 +296,7 @@ def _load_analysis_payload(
 
     suffix = Path(input_path).suffix.lower()
     if input_format == "json" or (input_format is None and suffix == ".json"):
-        _reject_row_only_options_for_json(merged_defaults)
-        raw = Path(input_path).read_text(encoding="utf-8-sig")
-        return _merge_json_payload(json.loads(raw), config_payload, defaults)
+        return load_json(Path(input_path).read_text(encoding="utf-8-sig"))
 
     if input_format == "csv":
         rows = read_csv_text(Path(input_path).read_text(encoding="utf-8-sig"))

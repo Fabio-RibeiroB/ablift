@@ -180,6 +180,35 @@ _ALLOWED_PAYLOAD_KEYS = frozenset(
 )
 
 
+DEFAULT_SAMPLES = 50000
+DEFAULT_RANDOM_SEED = 7
+
+
+def _uses_random_seed(method: str, input_interpretation: dict[str, Any]) -> bool:
+    """Posterior sampling (bayesian) or a row-level bootstrap CI consumes the seed."""
+    return method == "bayesian" or bool(input_interpretation.get("bootstrap_ci"))
+
+
+def _reject_unused_sampling_settings(
+    payload: dict, method: str, input_interpretation: dict[str, Any]
+) -> None:
+    """Mirror the CLI: explicit settings the chosen method would ignore are errors."""
+    if method == "bayesian":
+        return
+    if payload.get("samples") is not None:
+        raise ValueError(
+            f"samples only applies when method is 'bayesian' (posterior sampling); "
+            f"remove it for method '{method}'."
+        )
+    if payload.get("random_seed") is not None and not _uses_random_seed(
+        method, input_interpretation
+    ):
+        raise ValueError(
+            f"random_seed only applies when method is 'bayesian' or a bootstrap CI is "
+            f"requested; remove it for method '{method}'."
+        )
+
+
 def _parse_payload(payload: dict) -> AnalysisInput:
     if not isinstance(payload, dict):
         raise ValueError("Input must be a JSON object.")
@@ -248,6 +277,8 @@ def _parse_payload(payload: dict) -> AnalysisInput:
     decision_policy_payload = payload.get("decision_policy")
     threshold_payload = payload.get("decision_thresholds")
     method = payload.get("method") or "bayesian"
+    input_interpretation = payload.get("input_interpretation") or {}
+    _reject_unused_sampling_settings(payload, method, input_interpretation)
 
     if decision_policy_payload is not None:
         if not isinstance(decision_policy_payload, dict):
@@ -276,6 +307,8 @@ def _parse_payload(payload: dict) -> AnalysisInput:
     else:
         decision_policy = DecisionPolicy(enabled=False, thresholds=None, source="none")
 
+    samples = payload.get("samples")
+    random_seed = payload.get("random_seed")
     return AnalysisInput(
         experiment_name=payload.get("experiment_name") or "experiment",
         method=method,
@@ -286,9 +319,9 @@ def _parse_payload(payload: dict) -> AnalysisInput:
         guardrails=guardrails,
         secondary_metrics=secondary_metrics,
         decision_policy=decision_policy,
-        random_seed=payload.get("random_seed", 7),
-        samples=payload.get("samples", 50000),
-        input_interpretation=payload.get("input_interpretation", {}),
+        random_seed=DEFAULT_RANDOM_SEED if random_seed is None else random_seed,
+        samples=DEFAULT_SAMPLES if samples is None else samples,
+        input_interpretation=input_interpretation,
         expected_split=payload.get("expected_split"),
     )
 
@@ -485,7 +518,7 @@ def validate_input(inp: AnalysisInput) -> None:
 
     if inp.method not in {"bayesian", "sequential", "fixed"}:
         raise ValueError("method must be 'bayesian', 'sequential', or 'fixed'.")
-    if inp.method == "fixed" and inp.sequential_tau is not None:
+    if inp.method != "sequential" and inp.sequential_tau is not None:
         raise ValueError("sequential_tau only applies when method is 'sequential'.")
     if inp.primary_metric not in SUPPORTED_METRICS:
         raise ValueError("primary_metric must be 'conversion_rate', 'arpu', or 'ratio'.")
@@ -1225,18 +1258,21 @@ def build_analysis_settings(
     else:
         multiple_comparisons = {"correction": "none", "n_comparisons": n_comparisons}
 
+    interpretation = (
+        input_interpretation if input_interpretation is not None else inp.input_interpretation
+    )
     return AnalysisSettings(
         primary_metric=inp.primary_metric,
         alpha=inp.alpha,
         multiple_comparisons=multiple_comparisons,
         sequential_tau=inp.sequential_tau,
-        samples=inp.samples,
-        random_seed=inp.random_seed,
+        samples=inp.samples if inp.method == "bayesian" else None,
+        random_seed=(
+            inp.random_seed if _uses_random_seed(inp.method, interpretation or {}) else None
+        ),
         priors=priors,
         decision_policy=policy,
-        input_interpretation=(
-            input_interpretation if input_interpretation is not None else inp.input_interpretation
-        ),
+        input_interpretation=interpretation,
     )
 
 

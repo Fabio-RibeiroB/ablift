@@ -437,12 +437,18 @@ def build_analyze_input_schema() -> dict[str, Any]:
                 "type": "integer",
                 "minimum": 1,
                 "default": 50000,
-                "description": "Posterior Monte Carlo sample count (Bayesian mode).",
+                "description": (
+                    "Posterior Monte Carlo sample count. Only applies when method='bayesian'; "
+                    "rejected for sequential and fixed."
+                ),
             },
             "random_seed": {
                 "type": "integer",
                 "default": 7,
-                "description": "Random seed for reproducible Bayesian sampling.",
+                "description": (
+                    "Random seed for reproducible Bayesian sampling. Only applies when "
+                    "method='bayesian'; rejected for sequential and fixed."
+                ),
             },
             "input_interpretation": {
                 "type": "object",
@@ -483,8 +489,18 @@ def build_analyze_output_schema() -> dict[str, Any]:
                         "required": ["correction", "n_comparisons"],
                     },
                     "sequential_tau": {"type": ["number", "null"]},
-                    "samples": {"type": "integer", "minimum": 1},
-                    "random_seed": {"type": "integer"},
+                    "samples": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "description": "Posterior sample count; null unless method is bayesian.",
+                    },
+                    "random_seed": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "Seed for Bayesian sampling or the row-level ARPU bootstrap; null "
+                            "when neither ran."
+                        ),
+                    },
                     "priors": {"type": "object"},
                     "decision_policy": {
                         "type": "object",

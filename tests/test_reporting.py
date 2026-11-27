@@ -27,6 +27,9 @@ def _report(**overrides):
         "variants": _variants(("control", 10000, 400), ("v1", 10000, 460)),
     }
     payload.update(overrides)
+    if payload["method"] != "bayesian":
+        payload.pop("samples")
+        payload.pop("random_seed")
     return build_markdown_report(analyze(parse_payload(payload)))
 
 
