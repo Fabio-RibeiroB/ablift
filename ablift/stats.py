@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from statistics import NormalDist
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -311,6 +311,28 @@ def bootstrap_mean_diff_ci(
     return float(lo), float(hi)
 
 
+class CupedSums(NamedTuple):
+    """Per-arm sufficient statistics for CUPED: outcome Y and pre-experiment covariate X."""
+
+    name: str
+    is_control: bool
+    n: int
+    y_sum: float
+    y_sum_sq: float
+    x_sum: float
+    x_sum_sq: float
+    xy_sum: float
+
+
+class CupedArm(NamedTuple):
+    """CUPED-adjusted arm moments: mean, sample variance, centered sum of squares, size."""
+
+    mean: float
+    var: float
+    ss: float
+    n: int
+
+
 def validate_cuped_aggregates(
     n: int,
     y_sum: float,
@@ -373,17 +395,14 @@ def validate_cuped_aggregates(
 
 
 def compute_cuped_adjustment(
-    variants: list[tuple[str, bool, int, float, float, float, float, float]],
-) -> tuple[dict[str, tuple[float, float, float, int]], dict[str, Any]]:
-    """Compute within-arm pooled CUPED-adjusted means, variances, and diagnostics.
+    variants: list[CupedSums],
+) -> tuple[dict[str, CupedArm], dict[str, Any]]:
+    """Compute within-arm pooled CUPED-adjusted arm moments and diagnostics.
 
-    Each entry in ``variants`` is ``(name, is_control, n, y_sum, y_sum_sq, x_sum, x_sum_sq, xy_sum)``.
-    Uses within-arm pooled covariance (Deng et al. 2013 / Lin 2013):
+    Uses within-arm pooled covariance (Deng et al. 2013):
         theta_hat = sum_k S_{xy,k} / sum_k S_{xx,k}
-    so ``theta_hat`` is strictly invariant to treatment effect shifts in Y.
-
-    Returns ``(arm_stats, diagnostics)`` where ``arm_stats[name]`` is
-    ``(adjusted_mean, adjusted_sample_var, adjusted_ss, n)``.
+    so ``theta_hat`` is invariant to treatment-effect shifts in Y. The adjusted treatment
+    effects equal the treatment coefficients of an OLS fit ``Y ~ arm + X`` (ANCOVA).
     """
     centered: list[tuple[str, bool, int, float, float, float, float, float]] = []
     total_n = 0
@@ -416,7 +435,7 @@ def compute_cuped_adjustment(
     else:
         r_squared = 0.0
 
-    arm_stats: dict[str, tuple[float, float, float, int]] = {}
+    arm_stats: dict[str, CupedArm] = {}
     total_adj_ss = 0.0
     control_x: tuple[float, float, int] | None = None
     treatment_xs: list[tuple[float, float, int]] = []
@@ -425,7 +444,7 @@ def compute_cuped_adjustment(
         adj_mean = y_bar - theta * (x_bar - x_pool)
         adj_ss = max(s_yy - 2.0 * theta * s_xy + (theta * theta) * s_xx, 0.0)
         adj_var = adj_ss / (n - 1)
-        arm_stats[name] = (float(adj_mean), float(adj_var), float(adj_ss), n)
+        arm_stats[name] = CupedArm(float(adj_mean), float(adj_var), float(adj_ss), n)
         total_adj_ss += adj_ss
 
         x_var = s_xx / (n - 1)

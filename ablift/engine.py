@@ -23,6 +23,8 @@ from .models import (
     VariantInput,
 )
 from .stats import (
+    CupedArm,
+    CupedSums,
     aggregated_arpu_tail_diagnostics,
     compute_cuped_adjustment,
     delta_ratio_z_test,
@@ -44,7 +46,7 @@ def _has_cuped(variants: list[VariantInput]) -> bool:
 
 def _compute_cuped_for_input(
     inp: AnalysisInput,
-) -> tuple[dict[str, tuple[float, float, float, int]], dict[str, Any]]:
+) -> tuple[dict[str, CupedArm], dict[str, Any]]:
     if inp.primary_metric not in {"conversion_rate", "arpu"}:
         raise ValueError(
             "CUPED variance reduction is supported for 'conversion_rate' and 'arpu' "
@@ -53,7 +55,7 @@ def _compute_cuped_for_input(
     names = [v.name for v in inp.variants]
     if len(set(names)) != len(names):
         raise ValueError("CUPED requires unique variant names.")
-    entries: list[tuple[str, bool, int, float, float, float, float, float]] = []
+    entries: list[CupedSums] = []
     for variant in inp.variants:
         if (
             variant.covariate_sum is None
@@ -71,15 +73,15 @@ def _compute_cuped_for_input(
             y_sum = float(variant.revenue_sum or 0.0)
             y_sum_sq = float(variant.revenue_sum_squares or 0.0)
         entries.append(
-            (
-                variant.name,
-                variant.is_control,
-                variant.visitors,
-                y_sum,
-                y_sum_sq,
-                variant.covariate_sum,
-                variant.covariate_sum_squares,
-                variant.outcome_covariate_sum,
+            CupedSums(
+                name=variant.name,
+                is_control=variant.is_control,
+                n=variant.visitors,
+                y_sum=y_sum,
+                y_sum_sq=y_sum_sq,
+                x_sum=variant.covariate_sum,
+                x_sum_sq=variant.covariate_sum_squares,
+                xy_sum=variant.outcome_covariate_sum,
             )
         )
     return compute_cuped_adjustment(entries)
@@ -470,9 +472,6 @@ def validate_input(inp: AnalysisInput) -> None:
     elif inp.primary_metric == "ratio":
         _validate_variant_metrics(inp.variants, "ratio", "Primary metric")
 
-    if _has_cuped(inp.variants):
-        _compute_cuped_for_input(inp)
-
     for item in inp.guardrails:
         _validate_guardrail_item(inp, item)
 
@@ -490,7 +489,7 @@ def analyze(inp: AnalysisInput) -> AnalysisResult:
     control = [v for v in inp.variants if v.is_control][0]
     treatments = [v for v in inp.variants if not v.is_control]
 
-    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None
+    cuped_arms: dict[str, CupedArm] | None = None
     cuped_diag: dict[str, Any] | None = None
     if _has_cuped(inp.variants):
         cuped_arms, cuped_diag = _compute_cuped_for_input(inp)
@@ -692,7 +691,7 @@ def _run_metric_comparisons(
     control: VariantInput,
     treatments: list[VariantInput],
     *,
-    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None,
+    cuped_arms: dict[str, CupedArm] | None = None,
 ) -> tuple[list[ComparisonResult], list[BayesianArmSummary] | None]:
     if inp.method == "bayesian":
         comparisons, bayesian_arms = _analyze_bayesian_joint(
@@ -1008,21 +1007,21 @@ def _draw_bayesian_samples(
     control: VariantInput,
     treatments: list[VariantInput],
     *,
-    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None,
+    cuped_arms: dict[str, CupedArm] | None = None,
 ) -> tuple[float, list[float], np.ndarray, list[np.ndarray]]:
     rng = np.random.default_rng(inp.random_seed)
 
     if cuped_arms is not None:
-        c_mean, _c_var, c_ss, c_n = cuped_arms[control.name]
-        control_samples = sample_mean_posterior_from_moments(c_n, c_mean, c_ss, inp.samples, rng)
-        control_rate = c_mean
+        c = cuped_arms[control.name]
+        control_rate = c.mean
+        control_samples = sample_mean_posterior_from_moments(c.n, c.mean, c.ss, inp.samples, rng)
         treatment_rates = []
         treatment_samples_list = []
         for t in treatments:
-            t_mean, _t_var, t_ss, t_n = cuped_arms[t.name]
-            treatment_rates.append(t_mean)
+            arm = cuped_arms[t.name]
+            treatment_rates.append(arm.mean)
             treatment_samples_list.append(
-                sample_mean_posterior_from_moments(t_n, t_mean, t_ss, inp.samples, rng)
+                sample_mean_posterior_from_moments(arm.n, arm.mean, arm.ss, inp.samples, rng)
             )
     elif inp.primary_metric == "conversion_rate":
         alpha_prior = 1.0
@@ -1090,7 +1089,7 @@ def _analyze_bayesian_joint(
     control: VariantInput,
     treatments: list[VariantInput],
     *,
-    cuped_arms: dict[str, tuple[float, float, float, int]] | None = None,
+    cuped_arms: dict[str, CupedArm] | None = None,
 ) -> tuple[list[ComparisonResult], list[BayesianArmSummary]]:
     control_rate, treatment_rates, control_samples, treatment_samples_list = _draw_bayesian_samples(
         inp, control, treatments, cuped_arms=cuped_arms
@@ -1360,23 +1359,23 @@ def analyze_sequential_cuped(
     inp: AnalysisInput,
     control: VariantInput,
     treatments: list[VariantInput],
-    cuped_arms: dict[str, tuple[float, float, float, int]],
+    cuped_arms: dict[str, CupedArm],
 ) -> list[ComparisonResult]:
     """Always-valid mSPRT using CUPED-adjusted means and variances."""
     alpha_adj = per_comparison_alpha(inp.alpha, len(treatments))
-    c_mean, c_var, _c_ss, c_n = cuped_arms[control.name]
+    c = cuped_arms[control.name]
     out: list[ComparisonResult] = []
     for treatment in treatments:
-        t_mean, t_var, _t_ss, t_n = cuped_arms[treatment.name]
-        se = math.sqrt(max((c_var / c_n) + (t_var / t_n), 1e-18))
+        t = cuped_arms[treatment.name]
+        se = math.sqrt(max(c.var / c.n + t.var / t.n, 1e-18))
         out.append(
             _sequential_comparison(
                 inp=inp,
                 control=control,
                 treatment=treatment,
                 metric=inp.primary_metric,
-                control_value=c_mean,
-                treatment_value=t_mean,
+                control_value=c.mean,
+                treatment_value=t.mean,
                 se=se,
                 alpha_adj=alpha_adj,
             )
@@ -1762,28 +1761,28 @@ def analyze_fixed_cuped(
     inp: AnalysisInput,
     control: VariantInput,
     treatments: list[VariantInput],
-    cuped_arms: dict[str, tuple[float, float, float, int]],
+    cuped_arms: dict[str, CupedArm],
 ) -> list[ComparisonResult]:
     """Fixed-horizon Welch's two-sample t-test on CUPED-adjusted moments."""
     n_comparisons = len(treatments)
     alpha_adj = per_comparison_alpha(inp.alpha, n_comparisons)
-    c_mean, c_var, _c_ss, c_n = cuped_arms[control.name]
+    c = cuped_arms[control.name]
 
     out: list[ComparisonResult] = []
     for treatment in treatments:
-        t_mean, t_var, _t_ss, t_n = cuped_arms[treatment.name]
+        t = cuped_arms[treatment.name]
         out.append(
             _fixed_welch_comparison(
                 inp=inp,
                 control_name=control.name,
                 treatment_name=treatment.name,
                 metric=inp.primary_metric,
-                n1=c_n,
-                mean1=c_mean,
-                var1=c_var,
-                n2=t_n,
-                mean2=t_mean,
-                var2=t_var,
+                n1=c.n,
+                mean1=c.mean,
+                var1=c.var,
+                n2=t.n,
+                mean2=t.mean,
+                var2=t.var,
                 n_comparisons=n_comparisons,
                 alpha_adj=alpha_adj,
             )
