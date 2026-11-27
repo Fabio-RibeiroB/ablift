@@ -167,8 +167,12 @@ def test_arpu_fixed_matches_statsmodels_normal_ind_power(
     )
     n_worst_sm = n_control_sm * ratio_worst
 
-    assert plan.n_by_variant[0] == pytest.approx(math.ceil(n_control_sm), abs=1)
-    assert min(plan.n_by_variant[1:]) == pytest.approx(math.ceil(n_worst_sm), abs=1)
+    # Every arm gets at least the statsmodels requirement; topping up the total so the
+    # smallest arm is covered can add a few users per arm, never more than one per variant.
+    slack = len(split) + 1
+    assert math.floor(n_control_sm) <= plan.n_by_variant[0] <= math.ceil(n_control_sm) + slack
+    worst = min(plan.n_by_variant[1:])
+    assert math.floor(n_worst_sm) <= worst <= math.ceil(n_worst_sm) + slack
 
     # Check exact 25/9 = 2.778x scaling for 90/10 vs 50/50.
     if split == [0.9, 0.1]:
@@ -475,7 +479,10 @@ def test_duration_and_power_round_trip_with_split(
         relative_mde=0.1,
         **kwargs,
     )
-    assert achieved.power == pytest.approx(0.8, abs=0.003)
+    # power splits n_total exactly as duration did, so every arm gets its planned size and
+    # reaches the target (to the ~1e-5 gap between the closed form and exact power).
+    assert achieved.n_by_variant == plan.n_by_variant
+    assert achieved.power >= 0.8 - 1e-4
 
     mde_res = power_analysis(
         metric=metric,
@@ -819,3 +826,112 @@ def test_cli_outputs_validate_against_schemas() -> None:
         assert res.exit_code == 0, f"{args}: {res.output}"
         out = json.loads(res.output)
         assert validate_json_schema(out, pwr_schema) == [], f"{args}: {out}"
+
+
+def test_round_trip_regression_80_10_10_keeps_extra_users_on_small_arms() -> None:
+    """Review of #62: power re-split 32506 as [26005, 3251, 3250] and reported 0.79995."""
+    plan = fixed_horizon_duration_conversion(
+        0.08, 0.2, 50_000, n_variants=3, expected_split=[80, 10, 10]
+    )
+    achieved = power_analysis(
+        metric="conversion_rate",
+        method="fixed",
+        n_total=plan.n_total,
+        n_variants=3,
+        expected_split=[80, 10, 10],
+        baseline_rate=0.08,
+        relative_mde=0.2,
+    )
+    assert achieved.n_by_variant == plan.n_by_variant
+    assert achieved.power >= 0.8 - 1e-4
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_round_trip_sweep_never_underpowers(seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    k = int(rng.integers(2, 5))
+    split = [float(w) for w in rng.uniform(0.05, 1.0, size=k)]
+    baseline = float(rng.uniform(0.02, 0.3))
+    mde = float(rng.uniform(0.05, 0.4))
+    plan = fixed_horizon_duration_conversion(
+        baseline, mde, 10_000, n_variants=k, expected_split=split
+    )
+    achieved = power_analysis(
+        metric="conversion_rate",
+        method="fixed",
+        n_total=plan.n_total,
+        n_variants=k,
+        expected_split=split,
+        baseline_rate=baseline,
+        relative_mde=mde,
+    )
+    assert achieved.n_by_variant == plan.n_by_variant
+    assert achieved.power >= 0.8 - 1e-4
+
+
+def test_bayesian_conversion_sizes_for_smallest_treatment_arm() -> None:
+    """With three arms, the smaller treatment share must drive the duration."""
+    kwargs = dict(baseline_rate=0.05, relative_mde=0.2, daily_total_traffic=5_000, n_variants=3)
+    uneven = bayesian_duration_conversion(**kwargs, expected_split=[0.6, 0.3, 0.1], max_days=120)
+    even = bayesian_duration_conversion(**kwargs, expected_split=[0.6, 0.2, 0.2], max_days=120)
+    assert uneven.estimated_days is not None and even.estimated_days is not None
+    assert uneven.estimated_days > even.estimated_days
+
+
+def test_bayesian_arpu_treatment_noise_uses_treatment_n() -> None:
+    """Shrinking only the treatment share must lengthen the ARPU Bayesian plan.
+
+    Holding the control share at 50% isolates the treatment arm's own sample size.
+    """
+    kwargs = dict(
+        baseline_mean=50.0,
+        baseline_sd=100.0,
+        relative_mde=0.1,
+        daily_total_traffic=10_000,
+        n_variants=3,
+        max_expected_loss=1.0,
+        max_days=120,
+    )
+    balanced = bayesian_duration_arpu(**kwargs, expected_split=[0.5, 0.25, 0.25])
+    starved = bayesian_duration_arpu(**kwargs, expected_split=[0.5, 0.45, 0.05])
+    assert balanced.estimated_days is not None and starved.estimated_days is not None
+    assert starved.estimated_days >= 2 * balanced.estimated_days
+
+
+def _reference_arpu_assurance(
+    mean: float, mde: float, sd: float, n_c: int, n_t: int, prob: float, max_loss: float
+) -> float:
+    """Independent assurance: simulate arm means, then use normal-posterior closed forms.
+
+    At these sample sizes the NIG posterior of each mean is ~N(x_bar, sd^2/n), so
+    P(win) = Phi(d/se) and E[max(theta_C - theta_T, 0)] = se*phi(d/se) - d*Phi(-d/se).
+    """
+    from scipy.stats import norm
+
+    rng = np.random.default_rng(0)
+    sims = 200_000
+    d = rng.normal(mean * (1 + mde), sd / math.sqrt(n_t), sims) - rng.normal(
+        mean, sd / math.sqrt(n_c), sims
+    )
+    se = sd * math.sqrt(1 / n_c + 1 / n_t)
+    z = d / se
+    loss = se * norm.pdf(z) - d * norm.cdf(-z)
+    return float(np.mean((norm.cdf(z) >= prob) & (loss <= max_loss) & (d > 0)))
+
+
+def test_bayesian_arpu_assurance_matches_independent_reference_with_split() -> None:
+    plan = bayesian_duration_arpu(
+        baseline_mean=50.0,
+        baseline_sd=100.0,
+        relative_mde=0.1,
+        daily_total_traffic=10_000,
+        n_variants=2,
+        expected_split=[0.9, 0.1],
+        max_expected_loss=1.0,
+        max_days=200,
+    )
+    assert plan.n_by_variant is not None
+    n_c, n_t = plan.n_by_variant
+    reference = _reference_arpu_assurance(50.0, 0.1, 100.0, n_c, n_t, 0.95, 1.0)
+    # 300 simulations per day give a Monte Carlo SE of about 0.023.
+    assert plan.diagnostics["assurance_at_selected_day"] == pytest.approx(reference, abs=0.07)
