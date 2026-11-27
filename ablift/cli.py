@@ -21,8 +21,11 @@ from .engine import analyze as run_analysis
 from .engine import parse_payload
 from .models import SCHEMA_VERSION
 from .planning import (
+    bayesian_duration_arpu,
     bayesian_duration_conversion,
+    fixed_horizon_duration_arpu,
     fixed_horizon_duration_conversion,
+    sequential_duration_arpu,
     sequential_duration_conversion,
 )
 from .reporting import build_markdown_report
@@ -508,6 +511,8 @@ Examples:
   ablift duration --method sequential --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000
   ablift duration --method fixed --baseline-rate 0.04 --relative-mde 0.05 --daily-traffic 50000 --n-variants 3
   ablift duration --method bayesian --baseline-rate 0.04 --relative-mde 0.08 --daily-traffic 60000
+  ablift duration --metric arpu --baseline-mean 12.5 --baseline-sd 25.0 --relative-mde 0.05 --daily-traffic 50000
+  ablift duration --metric arpu --baseline-mean 12.5 --baseline-cv 2.0 --relative-mde 0.05 --daily-traffic 50000
   ablift duration --input assumptions.csv
   echo '{"baseline_rate": 0.04, "relative_mde": 0.05, "daily_traffic": 50000}' | ablift duration --input -
   cat assumptions.csv | ablift duration --input - --input-format csv
@@ -515,9 +520,19 @@ Examples:
 
 
 _BAYESIAN_ONLY = ("prob_threshold", "max_expected_loss", "assurance_target", "max_days")
+_METHOD_SCOPED = ("alpha", "power", "sequential_tau", *_BAYESIAN_ONLY)
+_CONVERSION_ONLY = ("baseline_rate",)
+_ARPU_ONLY = ("baseline_mean", "baseline_sd", "baseline_cv")
+_METRIC_SCOPED = (*_CONVERSION_ONLY, *_ARPU_ONLY)
 
 
 @cli.command(epilog=DURATION_EPILOG)
+@click.option(
+    "--metric",
+    type=click.Choice(["conversion_rate", "arpu"]),
+    default=None,
+    help="Primary metric to plan for. [default: conversion_rate]",
+)
 @click.option(
     "--method",
     type=click.Choice(["sequential", "fixed", "bayesian"]),
@@ -529,7 +544,25 @@ _BAYESIAN_ONLY = ("prob_threshold", "max_expected_loss", "assurance_target", "ma
     "--baseline-rate",
     type=float,
     default=None,
-    help="Baseline conversion rate, decimal (e.g. 0.04).",
+    help="Baseline conversion rate, decimal (e.g. 0.04; for --metric conversion_rate).",
+)
+@click.option(
+    "--baseline-mean",
+    type=float,
+    default=None,
+    help="Baseline ARPU mean (for --metric arpu).",
+)
+@click.option(
+    "--baseline-sd",
+    type=float,
+    default=None,
+    help="Baseline ARPU standard deviation (for --metric arpu; mutually exclusive with --baseline-cv).",
+)
+@click.option(
+    "--baseline-cv",
+    type=float,
+    default=None,
+    help="Baseline ARPU coefficient of variation, sd / |mean| (for --metric arpu; mutually exclusive with --baseline-sd).",
 )
 @click.option(
     "--relative-mde", type=float, default=None, help="Relative MDE, decimal (e.g. 0.05 for +5%)."
@@ -546,7 +579,7 @@ _BAYESIAN_ONLY = ("prob_threshold", "max_expected_loss", "assurance_target", "ma
     "--sequential-tau",
     type=float,
     default=None,
-    help="mSPRT mixing parameter. Defaults to 10% of the baseline rate.",
+    help="mSPRT mixing parameter. Defaults to 10% of the baseline rate or mean.",
 )
 @click.option(
     "--prob-threshold", type=float, default=None, help="Bayesian P(win) threshold. [default: 0.95]"
@@ -572,8 +605,8 @@ _BAYESIAN_ONLY = ("prob_threshold", "max_expected_loss", "assurance_target", "ma
     "input_path",
     required=False,
     type=click.Path(exists=True, allow_dash=True),
-    help="CSV/XLSX/JSON file or '-' for stdin (baseline_rate, relative_mde, daily_traffic, ...). "
-    "CLI flags override input values.",
+    help="CSV/XLSX/JSON file or '-' for stdin (metric, baseline_rate / baseline_mean + "
+    "baseline_sd|cv, relative_mde, daily_traffic, ...). CLI flags override input values.",
 )
 @click.option(
     "--input-format",
@@ -583,8 +616,12 @@ _BAYESIAN_ONLY = ("prob_threshold", "max_expected_loss", "assurance_target", "ma
 )
 @click.option("--sheet", required=False, default=None, help="Excel sheet name for duration input.")
 def duration(
+    metric: str | None,
     method: str | None,
     baseline_rate: float | None,
+    baseline_mean: float | None,
+    baseline_sd: float | None,
+    baseline_cv: float | None,
     relative_mde: float | None,
     daily_traffic: int | None,
     n_variants: int | None,
@@ -600,14 +637,17 @@ def duration(
     input_format: str | None,
     sheet: str | None,
 ) -> None:
-    """Estimate how long a conversion-rate test needs to run."""
+    """Estimate how long an experiment needs to run."""
     if input_format is not None and input_path is None:
         raise click.UsageError("--input-format requires --input.")
     _validate_sheet_option(input_path, input_format, sheet)
-
     flags = {
+        "metric": metric,
         "method": method,
         "baseline_rate": baseline_rate,
+        "baseline_mean": baseline_mean,
+        "baseline_sd": baseline_sd,
+        "baseline_cv": baseline_cv,
         "relative_mde": relative_mde,
         "daily_traffic": daily_traffic,
         "n_variants": n_variants,
@@ -620,6 +660,7 @@ def duration(
         "max_days": max_days,
     }
     req: dict[str, Any] = {
+        "metric": "conversion_rate",
         "method": "sequential",
         "n_variants": 2,
         "alpha": 0.05,
@@ -631,71 +672,155 @@ def duration(
     }
     try:
         file_keys: set[str] = set()
+        file_has_both_sd_cv = False
         if input_path:
             file_req = _load_duration_request(
                 input_path=input_path,
                 input_format=input_format,
                 sheet=sheet,
             )
-            # When --method overrides the file's method, the file's other settings were written
-            # for a different planner, so they are not counted as explicitly requested.
-            overridden = method is not None and file_req.get("method", method) != method
-            file_keys = set() if overridden else set(file_req)
-            req.update(file_req)
+            # When --method or --metric overrides the input's value, settings scoped to the
+            # overridden method/metric were written for a different mode, so ignore them.
+            method_overridden = method is not None and file_req.get("method", method) != method
+            metric_overridden = metric is not None and file_req.get("metric", metric) != metric
+            file_keys = set(file_req)
+            if method_overridden:
+                file_keys -= set(_METHOD_SCOPED)
+            if metric_overridden:
+                file_keys -= set(_METRIC_SCOPED)
+            else:
+                file_has_both_sd_cv = "baseline_sd" in file_req and "baseline_cv" in file_req
+            req.update(
+                {
+                    k: v
+                    for k, v in file_req.items()
+                    if not (method_overridden and k in _METHOD_SCOPED)
+                    and not (metric_overridden and k in _METRIC_SCOPED)
+                }
+            )
         req.update({k: v for k, v in flags.items() if v is not None})
+        if baseline_sd is not None and baseline_cv is None:
+            req.pop("baseline_cv", None)
+        elif baseline_cv is not None and baseline_sd is None:
+            req.pop("baseline_sd", None)
 
-        missing = [
-            f"--{k.replace('_', '-')}"
-            for k in ("baseline_rate", "relative_mde", "daily_traffic")
-            if req.get(k) is None
-        ]
-        if missing:
-            raise click.UsageError(f"Missing required assumptions: {', '.join(missing)}.")
+        if req["metric"] not in {"conversion_rate", "arpu"}:
+            raise click.UsageError(
+                f"Unknown metric '{req['metric']}'. Use conversion_rate or arpu."
+            )
+        if req["method"] not in {"sequential", "fixed", "bayesian"}:
+            raise click.UsageError(
+                f"Unknown method '{req['method']}'. Use sequential, fixed, or bayesian."
+            )
 
-        # Reject settings the chosen planner would silently ignore.
+        # Reject settings the chosen metric or planner would silently ignore.
         explicit = {k for k, v in flags.items() if v is not None} | file_keys
-        not_applicable = {
+        not_applicable_metric = {
+            "conversion_rate": _ARPU_ONLY,
+            "arpu": _CONVERSION_ONLY,
+        }[req["metric"]]
+        ignored_metric = [
+            f"--{k.replace('_', '-')}" for k in not_applicable_metric if k in explicit
+        ]
+        if ignored_metric:
+            raise click.UsageError(
+                f"Not used by --metric {req['metric']}: {', '.join(ignored_metric)} "
+                "(set as a flag or input-file column). Remove them or choose a metric that "
+                "uses them."
+            )
+
+        if req["metric"] == "conversion_rate":
+            missing = [
+                f"--{k.replace('_', '-')}"
+                for k in ("baseline_rate", "relative_mde", "daily_traffic")
+                if req.get(k) is None
+            ]
+            if missing:
+                raise click.UsageError(f"Missing required assumptions: {', '.join(missing)}.")
+        else:
+            if (baseline_sd is not None and baseline_cv is not None) or file_has_both_sd_cv:
+                raise click.UsageError("Specify either --baseline-sd or --baseline-cv, not both.")
+            missing = []
+            if req.get("baseline_mean") is None:
+                missing.append("--baseline-mean")
+            if req.get("baseline_sd") is None and req.get("baseline_cv") is None:
+                missing.append("--baseline-sd (or --baseline-cv)")
+            if req.get("relative_mde") is None:
+                missing.append("--relative-mde")
+            if req.get("daily_traffic") is None:
+                missing.append("--daily-traffic")
+            if missing:
+                raise click.UsageError(f"Missing required assumptions: {', '.join(missing)}.")
+
+        not_applicable_method = {
             "bayesian": ("alpha", "power", "sequential_tau"),
             "fixed": ("sequential_tau", *_BAYESIAN_ONLY),
             "sequential": _BAYESIAN_ONLY,
-        }.get(req["method"], ())
-        ignored = [f"--{k.replace('_', '-')}" for k in not_applicable if k in explicit]
-        if ignored:
+        }[req["method"]]
+        ignored_method = [
+            f"--{k.replace('_', '-')}" for k in not_applicable_method if k in explicit
+        ]
+        if ignored_method:
             raise click.UsageError(
-                f"Not used by --method {req['method']}: {', '.join(ignored)} "
+                f"Not used by --method {req['method']}: {', '.join(ignored_method)} "
                 "(set as a flag or input-file column). Remove them or choose a method that "
                 "uses them."
             )
 
-        common = {
-            "baseline_rate": req["baseline_rate"],
-            "relative_mde": req["relative_mde"],
-            "daily_total_traffic": req["daily_traffic"],
-            "n_variants": req["n_variants"],
-        }
-        if req["method"] == "sequential":
-            plan = sequential_duration_conversion(
-                **common,
-                alpha=req["alpha"],
-                power=req["power"],
-                sequential_tau=req.get("sequential_tau"),
-            )
-        elif req["method"] == "fixed":
-            plan = fixed_horizon_duration_conversion(
-                **common, alpha=req["alpha"], power=req["power"]
-            )
-        elif req["method"] == "bayesian":
-            plan = bayesian_duration_conversion(
-                **common,
-                prob_threshold=req["prob_threshold"],
-                max_expected_loss=req["max_expected_loss"],
-                assurance_target=req["assurance_target"],
-                max_days=req["max_days"],
-            )
+        if req["metric"] == "conversion_rate":
+            common = {
+                "baseline_rate": req["baseline_rate"],
+                "relative_mde": req["relative_mde"],
+                "daily_total_traffic": req["daily_traffic"],
+                "n_variants": req["n_variants"],
+            }
+            if req["method"] == "sequential":
+                plan = sequential_duration_conversion(
+                    **common,
+                    alpha=req["alpha"],
+                    power=req["power"],
+                    sequential_tau=req.get("sequential_tau"),
+                )
+            elif req["method"] == "fixed":
+                plan = fixed_horizon_duration_conversion(
+                    **common, alpha=req["alpha"], power=req["power"]
+                )
+            else:
+                plan = bayesian_duration_conversion(
+                    **common,
+                    prob_threshold=req["prob_threshold"],
+                    max_expected_loss=req["max_expected_loss"],
+                    assurance_target=req["assurance_target"],
+                    max_days=req["max_days"],
+                )
         else:
-            raise click.UsageError(
-                f"Unknown method '{req['method']}'. Use sequential, fixed, or bayesian."
-            )
+            arpu_common = {
+                "baseline_mean": req["baseline_mean"],
+                "baseline_sd": req.get("baseline_sd"),
+                "baseline_cv": req.get("baseline_cv"),
+                "relative_mde": req["relative_mde"],
+                "daily_total_traffic": req["daily_traffic"],
+                "n_variants": req["n_variants"],
+            }
+            if req["method"] == "sequential":
+                plan = sequential_duration_arpu(
+                    **arpu_common,
+                    alpha=req["alpha"],
+                    power=req["power"],
+                    sequential_tau=req.get("sequential_tau"),
+                )
+            elif req["method"] == "fixed":
+                plan = fixed_horizon_duration_arpu(
+                    **arpu_common, alpha=req["alpha"], power=req["power"]
+                )
+            else:
+                plan = bayesian_duration_arpu(
+                    **arpu_common,
+                    prob_threshold=req["prob_threshold"],
+                    max_expected_loss=req["max_expected_loss"],
+                    assurance_target=req["assurance_target"],
+                    max_days=req["max_days"],
+                )
     except (ValueError, json.JSONDecodeError) as exc:
         raise click.ClickException(str(exc)) from exc
 

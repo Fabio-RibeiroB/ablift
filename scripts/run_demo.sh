@@ -30,4 +30,6 @@ run duration --input "$EX/duration_inputs.csv" --output "$OUT_DIR/duration_csv_o
 run duration --input "$EX/duration_inputs.xlsx" --sheet Sheet1 \
   --output "$OUT_DIR/duration_xlsx_output.json"
 
+run duration --input "$EX/duration_arpu.csv" --output "$OUT_DIR/duration_arpu_output.json"
+
 echo "Demo outputs written to $OUT_DIR" >&2

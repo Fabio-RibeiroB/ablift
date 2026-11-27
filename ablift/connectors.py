@@ -433,8 +433,12 @@ def build_payload_from_rows(
 
 
 _DURATION_FIELDS: dict[str, type] = {
+    "metric": str,
     "method": str,
     "baseline_rate": float,
+    "baseline_mean": float,
+    "baseline_sd": float,
+    "baseline_cv": float,
     "relative_mde": float,
     "daily_traffic": int,
     "n_variants": int,

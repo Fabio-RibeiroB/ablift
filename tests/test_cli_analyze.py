@@ -107,6 +107,7 @@ class DurationCliTests(unittest.TestCase):
         for args in (
             ["--input", str(root / "duration_inputs.csv")],
             ["--input", str(root / "duration_inputs.xlsx"), "--sheet", "Sheet1"],
+            ["--input", str(root / "duration_arpu.csv")],
         ):
             result = CliRunner().invoke(cli, ["duration", *args])
             self.assertEqual(result.exit_code, 0, result.output)
