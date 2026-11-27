@@ -427,7 +427,7 @@ class AnalyzeExpectedSplitCliTests(unittest.TestCase):
 
     def test_cli_rejects_malformed_and_invalid_expected_split_cleanly(self):
         runner = CliRunner()
-        bad_flags = [
+        malformed_flags = [
             "",
             "   ",
             "0.9,",
@@ -445,6 +445,8 @@ class AnalyzeExpectedSplitCliTests(unittest.TestCase):
             "nan,0.5",
             "inf,0.5",
             "-inf,0.5",
+        ]
+        mismatched_flags = [
             "0.5",
             "0.5,0.25,0.25",
             "control=0.8,unknown=0.2",
@@ -456,7 +458,10 @@ class AnalyzeExpectedSplitCliTests(unittest.TestCase):
                 "variant,visitors,conversions\ncontrol,1000,40\nv1,1000,45\n",
                 encoding="utf-8",
             )
-            for flag in bad_flags:
+            for flag, expected_code in [
+                *((f, 2) for f in malformed_flags),
+                *((f, 1) for f in mismatched_flags),
+            ]:
                 with self.subTest(flag=flag):
                     result = runner.invoke(
                         cli,
@@ -468,7 +473,7 @@ class AnalyzeExpectedSplitCliTests(unittest.TestCase):
                             flag,
                         ],
                     )
-                    self.assertEqual(result.exit_code, 1, f"{flag!r}: {result.output}")
+                    self.assertEqual(result.exit_code, expected_code, f"{flag!r}: {result.output}")
                     self.assertIn("Error:", result.output)
                     self.assertNotIn("Traceback", result.output)
 

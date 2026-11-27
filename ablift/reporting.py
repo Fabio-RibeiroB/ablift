@@ -73,6 +73,8 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
                 f"  - Welch t-statistic: {_fmt_float(comp.test_statistic, 4)} "
                 f"(df={_fmt_float(comp.degrees_of_freedom, 2)})"
             )
+        elif comp.metric == "conversion_rate" and comp.test_statistic is None:
+            lines.append("  - Test: Fisher's exact (sparse counts)")
         else:
             lines.append(f"  - z-statistic: {_fmt_float(comp.test_statistic, 4)}")
         lines.extend(
