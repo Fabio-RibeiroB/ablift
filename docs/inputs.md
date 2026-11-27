@@ -93,7 +93,7 @@ Top-level fields:
 - `method` (`"bayesian"`, `"sequential"`, or `"fixed"`)
 - `primary_metric` (`"conversion_rate"`, `"arpu"`, or `"ratio"`)
 - `alpha` (float, default `0.05`)
-- `sequential_tau` (optional float, sequential mode; default 10% of the control baseline)
+- `sequential_tau` (optional float, sequential mode only; rejected for `bayesian` and `fixed`; default 10% of the control baseline)
 - `variants` (list): exactly one row must include `"is_control": true`
 - `expected_split` (optional): expected traffic allocation weights for the SRM check, either as a list of positive numbers matching `variants` order (e.g. `[0.9, 0.1]` or `[90, 10]`) or an object mapping each variant name to a positive number (e.g. `{"control": 0.8, "v1": 0.2}`). Weights are normalized to sum to `1.0`. Defaults to an equal `1/k` split when omitted. Cannot be combined with per-variant `expected_share`.
 - `guardrails` (optional list): supports both **statistical per-variant guardrails** (`metric` + `variants`) and backwards-compatible **threshold guardrails** (`control` + `treatment` floats)
@@ -102,8 +102,10 @@ Top-level fields:
   - `enabled` (bool, default `false` when omitted)
   - `bayes_prob_beats_control` (Bayesian mode only, default `0.95`)
   - `max_expected_loss` (Bayesian mode only, default `0.001`)
-- `samples` (default `50000`, Bayesian mode)
-- `random_seed` (default `7`)
+- `samples` (default `50000`, Bayesian mode only; rejected for `sequential` and `fixed`)
+- `random_seed` (default `7`, Bayesian mode only; rejected for `sequential` and `fixed`). On the CLI, `--random-seed` also seeds the row-level ARPU `--bootstrap-samples` CI for any method.
+
+These method-scoped fields mirror the CLI, which rejects `--samples`, `--random-seed`, and `--sequential-tau` for methods that ignore them. When `--method` overrides the file's `method`, the file's settings for its own method are dropped instead of rejected.
 
 `decision_thresholds` is still accepted as a legacy alias for an enabled Bayesian `decision_policy`; use `decision_policy` in new inputs.
 
@@ -288,7 +290,7 @@ Notes:
 
 ## Reusable project config
 
-Use `[tool.ablift]` in `pyproject.toml` (read from the current directory) when you want one decision policy and one set of inference settings reused across analyses in the project.
+Use `[tool.ablift]` in `pyproject.toml` (read from the current directory) when you want one decision policy and one set of inference settings reused across analyses in the project. Only `ablift analyze` reads it; `duration` and `power` do not.
 
 ```toml
 [tool.ablift]
@@ -308,3 +310,11 @@ Precedence is:
 - input file
 - `pyproject.toml` `[tool.ablift]`
 - built-in defaults
+
+Method-scoped config values (`samples`, `random_seed`, `sequential_tau`) only apply to runs of the method that uses them, so a project config tuned for Bayesian runs does not block `--method sequential` or `--method fixed`.
+
+Every `analyze` output records the file that was applied in `analysis_settings.config_source` (its absolute path, or `null` when no `[tool.ablift]` table was found). Pass `--no-config` to ignore `pyproject.toml` entirely, for example when running from a directory whose project config is not meant for this analysis:
+
+```bash
+ablift analyze --input examples/checkout_test.csv --no-config
+```

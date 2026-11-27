@@ -77,11 +77,14 @@ class AnalysisSettings:
     alpha: float
     multiple_comparisons: dict[str, Any]
     sequential_tau: float | None
-    samples: int
-    random_seed: int
+    # None when the method does no posterior sampling (and, for the seed, no bootstrap).
+    samples: int | None
+    random_seed: int | None
     priors: dict[str, Any]
     decision_policy: dict[str, Any]
     input_interpretation: dict[str, Any]
+    # Absolute path of the pyproject.toml whose [tool.ablift] was applied; set by the CLI.
+    config_source: str | None = None
 
 
 @dataclass

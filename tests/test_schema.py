@@ -333,7 +333,7 @@ class SchemaValidationAgainstRealPayloadsTests(unittest.TestCase):
         for method in ("bayesian", "sequential", "fixed"):
             p = dict(arpu_payload)
             p["method"] = method
-            if method == "fixed":
+            if method != "bayesian":
                 p.pop("samples", None)
             res = self.runner.invoke(cli, ["analyze", "--input", "-"], input=json.dumps(p))
             self.assertEqual(res.exit_code, 0, f"{method}: {res.output}")

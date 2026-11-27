@@ -145,12 +145,27 @@ def _parse_expected_split_option(raw: str) -> list[float] | dict[str, float]:
     return weights
 
 
-def _load_project_config() -> dict[str, Any]:
+def _load_project_config(use_config: bool = True) -> tuple[dict[str, Any], str | None]:
+    """Return ``[tool.ablift]`` from ``./pyproject.toml`` and the file's absolute path.
+
+    The path is ``None`` when config is disabled, the file is missing, or it has no
+    ``[tool.ablift]`` table, so callers can report exactly where settings came from.
+    """
+    if not use_config:
+        return {}, None
     pyproject_path = Path.cwd() / "pyproject.toml"
-    if not pyproject_path.exists():
-        return {}
-    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    return data.get("tool", {}).get("ablift", {})
+    if not pyproject_path.is_file():
+        return {}, None
+    try:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise click.ClickException(
+            f"Could not parse {pyproject_path}: {exc}. Fix it or pass --no-config."
+        ) from exc
+    config = data.get("tool", {}).get("ablift")
+    if not isinstance(config, dict):
+        return {}, None
+    return config, str(pyproject_path.resolve())
 
 
 def _read_stdin() -> str:
@@ -221,21 +236,59 @@ def _reject_row_only_options_for_json(merged_defaults: dict[str, Any]) -> None:
         )
 
 
+def _drop_unused_method_settings(
+    settings: dict[str, Any], method: str, *, bootstrap: bool
+) -> dict[str, Any]:
+    """Drop method-scoped settings the effective method would not use.
+
+    Applied to ``[tool.ablift]`` project defaults (e.g. ``samples`` for Bayesian runs) and
+    to an input file whose method ``--method`` overrides: neither is an explicit request
+    for this run, so neither may trip the engine's method-scoped rejections.
+    """
+    unused: set[str] = set()
+    if method != "bayesian":
+        unused.add("samples")
+        if not bootstrap:
+            unused.add("random_seed")
+    if method != "sequential":
+        unused.add("sequential_tau")
+    return {k: v for k, v in settings.items() if k not in unused}
+
+
 def _load_analysis_payload(
     *,
     input_path: str,
     input_format: str | None,
     sheet: str | None,
     defaults: dict[str, Any],
+    config_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    config_payload = _load_project_config()
-    merged_defaults = _deep_merge(config_payload, defaults)
+    bootstrap = defaults.get("bootstrap_samples") is not None
+
+    def load_json(raw: str) -> dict[str, Any]:
+        _reject_row_only_options_for_json(_deep_merge(config_payload, defaults))
+        input_payload = json.loads(raw)
+        input_method = input_payload.get("method") if isinstance(input_payload, dict) else None
+        method = str(
+            defaults.get("method") or input_method or config_payload.get("method") or "bayesian"
+        )
+        if defaults.get("method") is not None and input_method not in {None, method}:
+            # Like `duration`: --method overrides the file's method, so the file's settings
+            # scoped to its own method were written for a different run.
+            input_payload = _drop_unused_method_settings(input_payload, method, bootstrap=bootstrap)
+        scoped = _drop_unused_method_settings(config_payload, method, bootstrap=bootstrap)
+        return _merge_json_payload(input_payload, scoped, defaults)
+
+    method = defaults.get("method") or config_payload.get("method") or "bayesian"
+    merged_defaults = _deep_merge(
+        _drop_unused_method_settings(config_payload, str(method), bootstrap=bootstrap),
+        defaults,
+    )
     if input_path == "-":
         raw = _read_stdin()
         fmt = input_format or "json"
         if fmt == "json":
-            _reject_row_only_options_for_json(merged_defaults)
-            return _merge_json_payload(json.loads(raw), config_payload, defaults)
+            return load_json(raw)
         rows = read_csv_text(raw)
         payload = build_payload_from_rows(rows, defaults=merged_defaults)
         if payload.get("experiment_name") in {None, "", "table_input_experiment"}:
@@ -244,9 +297,7 @@ def _load_analysis_payload(
 
     suffix = Path(input_path).suffix.lower()
     if input_format == "json" or (input_format is None and suffix == ".json"):
-        _reject_row_only_options_for_json(merged_defaults)
-        raw = Path(input_path).read_text(encoding="utf-8-sig")
-        return _merge_json_payload(json.loads(raw), config_payload, defaults)
+        return load_json(Path(input_path).read_text(encoding="utf-8-sig"))
 
     if input_format == "csv":
         rows = read_csv_text(Path(input_path).read_text(encoding="utf-8-sig"))
@@ -575,6 +626,15 @@ def cli() -> None:
     ),
 )
 @click.option(
+    "--no-config",
+    "no_config",
+    is_flag=True,
+    help=(
+        "Ignore [tool.ablift] in ./pyproject.toml. Without it, analysis_settings.config_source "
+        "reports the config file that was applied."
+    ),
+)
+@click.option(
     "--output",
     "output_path",
     required=False,
@@ -606,6 +666,7 @@ def analyze(
     samples: int | None,
     random_seed: int | None,
     expected_split: str | None,
+    no_config: bool,
     output_path: str | None,
     report_path: str | None,
 ) -> None:
@@ -648,12 +709,14 @@ def analyze(
         "random_seed": random_seed,
         "expected_split": parsed_expected_split,
     }
+    config_payload, config_source = _load_project_config(use_config=not no_config)
     try:
         input_payload = _load_analysis_payload(
             input_path=input_path,
             input_format=input_format,
             sheet=sheet,
             defaults=defaults,
+            config_payload=config_payload,
         )
     except UsageOptionError as exc:
         raise click.UsageError(str(exc)) from exc
@@ -675,7 +738,9 @@ def analyze(
     )
 
     try:
-        _emit_analysis(run_analysis(parse_payload(input_payload)), output_path, report_path)
+        result = run_analysis(parse_payload(input_payload))
+        result.analysis_settings.config_source = config_source
+        _emit_analysis(result, output_path, report_path)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     except MemoryError as exc:

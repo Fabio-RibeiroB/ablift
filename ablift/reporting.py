@@ -146,6 +146,8 @@ def build_markdown_report(result: AnalysisResult) -> str:
         f"- Primary metric: `{result.analysis_settings.primary_metric}`",
     ]
     settings = result.analysis_settings
+    if settings.config_source is not None:
+        lines.append(f"- Project config: `{settings.config_source}`")
     if result.method == "bayesian":
         lines.extend(
             [

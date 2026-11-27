@@ -9,6 +9,11 @@ from ablift.engine import analyze, parse_payload
 from ablift.reporting import build_markdown_report
 
 
+def bayes_only(method, **settings):
+    """Posterior-sampling settings are only accepted (and only used) for bayesian runs."""
+    return settings if method == "bayesian" else {}
+
+
 def _abn_primary_variants():
     # Both v1 (+15% rel) and v2 (+25% rel) clearly beat control (4.0%).
     return [
@@ -47,8 +52,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
             payload = {
                 "experiment_name": f"gr_{method}",
                 "method": method,
-                "samples": 4000,
-                "random_seed": 11,
+                **bayes_only(method, samples=4000, random_seed=11),
                 "variants": _abn_primary_variants(),
                 "guardrails": [_abn_bounce_guardrail_v2_regressed()],
                 "decision_policy": _policy(),
@@ -108,8 +112,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
             payload = {
                 "experiment_name": f"arpu_gr_{method}",
                 "method": method,
-                "samples": 4000,
-                "random_seed": 7,
+                **bayes_only(method, samples=4000, random_seed=7),
                 "variants": _abn_primary_variants(),
                 "guardrails": [arpu_guardrail],
                 "decision_policy": _policy(),
@@ -126,8 +129,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
         for method in ("bayesian", "sequential", "fixed"):
             payload = {
                 "method": method,
-                "samples": 4000,
-                "random_seed": 5,
+                **bayes_only(method, samples=4000, random_seed=5),
                 "variants": _abn_primary_variants(),
                 "guardrails": [_abn_bounce_guardrail_v2_regressed(max_relative_change=0.0)],
                 "decision_policy": _policy(),
@@ -143,8 +145,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
         for method in ("bayesian", "sequential", "fixed"):
             payload = {
                 "method": method,
-                "samples": 4000,
-                "random_seed": 7,
+                **bayes_only(method, samples=4000, random_seed=7),
                 "variants": [
                     {"name": "control", "visitors": 50000, "conversions": 2000, "is_control": True},
                     {"name": "v1", "visitors": 50000, "conversions": 2300, "is_control": False},
@@ -184,8 +185,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
         for method in ("bayesian", "sequential", "fixed"):
             payload = {
                 "method": method,
-                "samples": 4000,
-                "random_seed": 7,
+                **bayes_only(method, samples=4000, random_seed=7),
                 "variants": _abn_primary_variants(),
                 "guardrails": [both_fail],
                 "decision_policy": _policy(),
@@ -213,8 +213,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
         for method, action in expected_action.items():
             payload = {
                 "method": method,
-                "samples": 4000,
-                "random_seed": 7,
+                **bayes_only(method, samples=4000, random_seed=7),
                 "variants": variants,
                 "guardrails": [_abn_bounce_guardrail_v2_regressed()],
                 "decision_policy": _policy(),
@@ -239,8 +238,7 @@ class StatisticalGuardrailTests(unittest.TestCase):
         for method, action in expected_action.items():
             payload = {
                 "method": method,
-                "samples": 4000,
-                "random_seed": 7,
+                **bayes_only(method, samples=4000, random_seed=7),
                 "variants": variants,
                 "guardrails": [_abn_bounce_guardrail_v2_regressed()],
                 "decision_policy": _policy(),
@@ -314,8 +312,7 @@ class SecondaryMetricsTests(unittest.TestCase):
         for method in ("bayesian", "sequential", "fixed"):
             payload = {
                 "method": method,
-                "samples": 4000,
-                "random_seed": 7,
+                **bayes_only(method, samples=4000, random_seed=7),
                 "variants": _abn_primary_variants(),
                 "secondary_metrics": secondary,
                 "decision_policy": _policy(),

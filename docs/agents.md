@@ -50,7 +50,9 @@ Common errors and fixes:
 
 Output JSON starts with `"schema_version": "1"` (for `analyze`, `duration`, and `power`).
 
-`analysis_settings` includes `multiple_comparisons` (`correction`, `n_comparisons`, and for sequential/fixed `alpha_per_comparison`), `sequential_tau`, `priors`, `decision_policy` and `input_interpretation`.
+`analysis_settings` includes `multiple_comparisons` (`correction`, `n_comparisons`, and for sequential/fixed `alpha_per_comparison`), `sequential_tau`, `samples`, `random_seed`, `priors`, `decision_policy`, `input_interpretation`, and `config_source`. `samples` and `random_seed` are `null` when nothing was sampled: `samples` is set only for `bayesian`, and `random_seed` only for `bayesian` or when a row-level `--bootstrap-samples` CI used it.
+
+`analysis_settings.config_source` is the absolute path of the `pyproject.toml` whose `[tool.ablift]` table was applied, or `null` when there was none (no `pyproject.toml` in the current directory, no `[tool.ablift]` table, or `--no-config`). `ablift analyze` reads that file from the directory it runs in, so pass `--no-config` when you want results that depend only on the input and flags.
 
 `srm` includes `passed`, `p_value`, `observed`, `expected`, `expected_proportions` (normalized to sum to `1.0`), and `reason`.
 

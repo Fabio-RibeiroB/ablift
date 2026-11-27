@@ -19,6 +19,11 @@ from ablift.schemas import get_schema
 from ablift.stats import CupedSums, compute_cuped_adjustment, validate_cuped_aggregates
 
 
+def bayes_only(method, **settings):
+    """Posterior-sampling settings are only accepted (and only used) for bayesian runs."""
+    return settings if method == "bayesian" else {}
+
+
 def _sums(name: str, is_control: bool, y: np.ndarray, x: np.ndarray) -> CupedSums:
     return CupedSums(
         name,
@@ -384,8 +389,7 @@ class TestCupedMethodsAndDiagnostics:
             "method": method,
             "primary_metric": metric,
             "variants": variants,
-            "samples": 8000,
-            "random_seed": 7,
+            **bayes_only(method, samples=8000, random_seed=7),
         }
         if method == "bayesian":
             payload["decision_policy"] = {

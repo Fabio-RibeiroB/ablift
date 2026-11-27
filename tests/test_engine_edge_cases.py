@@ -34,8 +34,11 @@ def var(name, visitors, conversions=0, control=False, rev=None, sq=None):
 
 
 def build(variants, **kw):
-    payload = {"variants": variants, "samples": 3000}
+    payload = {"variants": variants}
     payload.update(kw)
+    # samples only applies to (and is only accepted for) bayesian runs.
+    if payload.get("method", "bayesian") == "bayesian":
+        payload.setdefault("samples", 3000)
     # Recommendations are opt-in; these tests exercise the sequential/fixed
     # recommendation logic, so opt in unless a test sets its own policy.
     if payload.get("method", "bayesian") != "bayesian":
