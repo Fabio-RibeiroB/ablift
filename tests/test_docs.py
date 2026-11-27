@@ -160,12 +160,14 @@ def test_links_and_anchors_resolve() -> None:
     for path in DOC_FILES:
         for target in re.findall(r"\]\(([^)\s]+)\)", path.read_text(encoding="utf-8")):
             local = REPO_URL.match(target)
-            if local:  # links to this repo's main branch must point at real files
-                target = str((ROOT / target[local.end() :]).relative_to(path.parent, walk_up=True))
-            elif re.match(r"https?://|mailto:", target):
+            if not local and re.match(r"https?://|mailto:", target):
                 continue
-            file_part, _, anchor = target.partition("#")
-            dest = (path.parent / file_part).resolve() if file_part else path
+            # Links to this repo's main branch must point at real files, like relative ones.
+            base = ROOT if local else path.parent
+            file_part, _, anchor = (
+                target[local.end() :].partition("#") if local else target.partition("#")
+            )
+            dest = (base / file_part).resolve() if file_part else path
             if not dest.exists():
                 broken.append(f"{path.relative_to(ROOT)}: {target} (missing file)")
             elif anchor and dest.suffix == ".md":

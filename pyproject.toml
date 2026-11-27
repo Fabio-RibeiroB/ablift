@@ -73,10 +73,12 @@ extend-exclude = ["*.ipynb"]
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
-[tool.ty]
+[tool.ty.environment]
+# Check against the oldest supported Python so 3.12+-only APIs fail locally, not in CI.
+python-version = "3.11"
 
 [tool.ty.src]
-include = ["ablift"]
+include = ["ablift", "scripts"]
 
 [tool.ablift]
 method = "bayesian"
