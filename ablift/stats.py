@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from statistics import NormalDist
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -309,3 +309,178 @@ def bootstrap_mean_diff_ci(
 
     lo, hi = np.quantile(diffs, [alpha / 2.0, 1.0 - alpha / 2.0])
     return float(lo), float(hi)
+
+
+class CupedSums(NamedTuple):
+    """Per-arm sufficient statistics for CUPED: outcome Y and pre-experiment covariate X."""
+
+    name: str
+    is_control: bool
+    n: int
+    y_sum: float
+    y_sum_sq: float
+    x_sum: float
+    x_sum_sq: float
+    xy_sum: float
+
+
+class CupedArm(NamedTuple):
+    """CUPED-adjusted arm moments: mean, sample variance, centered sum of squares, size."""
+
+    mean: float
+    var: float
+    ss: float
+    n: int
+
+
+def validate_cuped_aggregates(
+    n: int,
+    y_sum: float,
+    y_sum_sq: float,
+    x_sum: float,
+    x_sum_sq: float,
+    xy_sum: float,
+    *,
+    label: str = "variant",
+) -> tuple[float, float, float]:
+    """Validate CUPED sufficient statistics and return centered sums ``(s_yy, s_xx, s_xy)``.
+
+    Enforces ``n >= 2``, finite numeric inputs, non-negative second moments, and
+    Cauchy-Schwarz bounds ``s_xy^2 <= s_xx * s_yy`` (up to floating-point tolerance).
+    """
+    if isinstance(n, bool) or n < 2:
+        raise ValueError(f"{label}: CUPED requires at least 2 visitors, got {n!r}.")
+
+    fields = (
+        ("outcome_sum", y_sum),
+        ("outcome_sum_squares", y_sum_sq),
+        ("covariate_sum", x_sum),
+        ("covariate_sum_squares", x_sum_sq),
+        ("outcome_covariate_sum", xy_sum),
+    )
+    for field_name, value in fields:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(f"{label}: {field_name} must be a finite number.")
+
+    s_yy_raw = y_sum_sq - (y_sum * y_sum) / n
+    s_xx_raw = x_sum_sq - (x_sum * x_sum) / n
+    s_xy = xy_sum - (y_sum * x_sum) / n
+
+    tol_y = 1e-9 * max(1.0, abs(y_sum_sq), (y_sum * y_sum) / n)
+    tol_x = 1e-9 * max(1.0, abs(x_sum_sq), (x_sum * x_sum) / n)
+    if s_yy_raw < -tol_y:
+        raise ValueError(
+            f"{label}: outcome sum of squares ({y_sum_sq}) is inconsistent with "
+            f"outcome sum ({y_sum}) and visitors ({n})."
+        )
+    if s_xx_raw < -tol_x:
+        raise ValueError(
+            f"{label}: covariate_sum_squares ({x_sum_sq}) is inconsistent with "
+            f"covariate_sum ({x_sum}) and visitors ({n})."
+        )
+
+    s_yy = max(s_yy_raw, 0.0)
+    s_xx = max(s_xx_raw, 0.0)
+    cs_tol = 1e-7 * max(1.0, s_xx * s_yy, abs(xy_sum) ** 2 / n)
+    if s_xy * s_xy > s_xx * s_yy + cs_tol:
+        raise ValueError(
+            f"{label}: outcome_covariate_sum ({xy_sum}) violates Cauchy-Schwarz bounds "
+            "for the given outcome and covariate sums."
+        )
+    return s_yy, s_xx, s_xy
+
+
+def compute_cuped_adjustment(
+    variants: list[CupedSums],
+) -> tuple[dict[str, CupedArm], dict[str, Any]]:
+    """Compute within-arm pooled CUPED-adjusted arm moments and diagnostics.
+
+    Uses within-arm pooled covariance (Deng et al. 2013):
+        theta_hat = sum_k S_{xy,k} / sum_k S_{xx,k}
+    so ``theta_hat`` is invariant to treatment-effect shifts in Y. The adjusted treatment
+    effects equal the treatment coefficients of an OLS fit ``Y ~ arm + X`` (ANCOVA).
+    """
+    centered: list[tuple[str, bool, int, float, float, float, float, float]] = []
+    total_n = 0
+    total_x = 0.0
+    pooled_s_yy = 0.0
+    pooled_s_xx = 0.0
+    pooled_s_xy = 0.0
+
+    for name, is_ctrl, n, y_sum, y_sum_sq, x_sum, x_sum_sq, xy_sum in variants:
+        s_yy, s_xx, s_xy = validate_cuped_aggregates(
+            n, y_sum, y_sum_sq, x_sum, x_sum_sq, xy_sum, label=f"Variant {name!r}"
+        )
+        y_bar = y_sum / n
+        x_bar = x_sum / n
+        centered.append((name, is_ctrl, n, y_bar, x_bar, s_yy, s_xx, s_xy))
+        total_n += n
+        total_x += x_sum
+        pooled_s_yy += s_yy
+        pooled_s_xx += s_xx
+        pooled_s_xy += s_xy
+
+    x_pool = total_x / max(total_n, 1)
+    if pooled_s_xx > 1e-15:
+        theta = pooled_s_xy / pooled_s_xx
+    else:
+        theta = 0.0
+
+    if pooled_s_xx > 1e-15 and pooled_s_yy > 1e-15:
+        r_squared = min(max((pooled_s_xy * pooled_s_xy) / (pooled_s_xx * pooled_s_yy), 0.0), 1.0)
+    else:
+        r_squared = 0.0
+
+    arm_stats: dict[str, CupedArm] = {}
+    total_adj_ss = 0.0
+    control_x: tuple[float, float, int] | None = None
+    treatment_xs: list[tuple[float, float, int]] = []
+
+    for name, is_ctrl, n, y_bar, x_bar, s_yy, s_xx, s_xy in centered:
+        adj_mean = y_bar - theta * (x_bar - x_pool)
+        adj_ss = max(s_yy - 2.0 * theta * s_xy + (theta * theta) * s_xx, 0.0)
+        adj_var = adj_ss / (n - 1)
+        arm_stats[name] = CupedArm(float(adj_mean), float(adj_var), float(adj_ss), n)
+        total_adj_ss += adj_ss
+
+        x_var = s_xx / (n - 1)
+        if is_ctrl:
+            control_x = (x_bar, x_var, n)
+        else:
+            treatment_xs.append((x_bar, x_var, n))
+
+    if pooled_s_yy > 1e-15:
+        var_red_pct = min(max((1.0 - total_adj_ss / pooled_s_yy) * 100.0, 0.0), 100.0)
+    else:
+        var_red_pct = 0.0
+
+    # Pre-experiment covariate balance check (Bonferroni-adjusted across treatments).
+    min_balance_p = 1.0
+    if control_x is not None and treatment_xs:
+        cx_bar, cx_var, cn = control_x
+        n_treat = len(treatment_xs)
+        for tx_bar, tx_var, tn in treatment_xs:
+            se_x_sq = (cx_var / cn) + (tx_var / tn)
+            diff_x = tx_bar - cx_bar
+            if se_x_sq <= 0.0:
+                raw_p = 1.0 if diff_x == 0.0 else 0.0
+            else:
+                z = diff_x / math.sqrt(se_x_sq)
+                raw_p = 2.0 * (1.0 - NormalDist().cdf(abs(z)))
+            adj_p = min(1.0, raw_p * n_treat)
+            min_balance_p = min(min_balance_p, adj_p)
+
+    diagnostics: dict[str, Any] = {
+        "enabled": True,
+        "theta": float(theta),
+        "r_squared": float(r_squared),
+        "variance_reduction_pct": float(var_red_pct),
+        "pooled_covariate_mean": float(x_pool),
+        "covariate_balance_p_value": float(min_balance_p),
+        "covariate_imbalanced": bool(min_balance_p < 0.001),
+    }
+    return arm_stats, diagnostics

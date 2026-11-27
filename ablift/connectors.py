@@ -148,7 +148,12 @@ def _is_boolean_word_col(values: list[Any]) -> bool:
     return seen
 
 
-def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | None:
+def _find_control_column(
+    rows: list[dict[str, Any]],
+    skip_cols: int,
+    *,
+    exclude_cols: set[str | None] | None = None,
+) -> str | None:
     """Return the name of a boolean-valued column beyond the first skip_cols positional columns.
 
     A boolean-valued column (true/false, yes/no or 1/0) whose header mentions "control" is
@@ -159,8 +164,9 @@ def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | No
     """
     if not rows:
         return None
+    excluded = exclude_cols or set()
     all_cols = list(rows[0].keys())
-    candidates = list(reversed(all_cols[skip_cols:]))
+    candidates = [col for col in reversed(all_cols[skip_cols:]) if col not in excluded]
     for col in candidates:
         if "control" in str(col).lower() and _is_binary_col([row.get(col) for row in rows]):
             return col
@@ -175,6 +181,42 @@ def _find_control_column(rows: list[dict[str, Any]], skip_cols: int) -> str | No
         if has_true and has_false:
             return col
     return None
+
+
+def _resolve_covariate_column(cols: list[str], covariate_column: Any) -> str:
+    """Resolve ``--covariate-column`` (header or 1-based index) for row-level input."""
+    if len(cols) < 3:
+        raise UsageOptionError(
+            "Row-level input with --covariate-column requires at least 3 columns: "
+            "variant name, outcome, and covariate."
+        )
+    spec = str(covariate_column).strip()
+    if not spec:
+        raise UsageOptionError("--covariate-column cannot be empty.")
+
+    resolved: str | None = None
+    if spec in cols:
+        resolved = spec
+    elif spec.isdigit():
+        idx = int(spec)
+        if 1 <= idx <= len(cols):
+            resolved = cols[idx - 1]
+        else:
+            raise UsageOptionError(
+                f"Covariate column index {spec!r} is out of range (1..{len(cols)}). "
+                f"Available columns: {', '.join(cols)}."
+            )
+    else:
+        raise UsageOptionError(
+            f"Covariate column {covariate_column!r} not found. "
+            f"Available columns: {', '.join(cols)}."
+        )
+
+    if resolved in (cols[0], cols[1]):
+        raise UsageOptionError(
+            f"Covariate column {resolved!r} cannot be the same as the variant or outcome column."
+        )
+    return resolved
 
 
 _CONTROL_FLAG_HEADER = re.compile(r"^(is[ _-]?)?control([ _-]?(group|flag|arm|variant))?$", re.I)
@@ -215,13 +257,18 @@ def _to_finite_float(value: Any, field_name: str) -> float:
     return number
 
 
-def detect_input_shape(rows: list[dict[str, Any]], primary_metric: str | None = None) -> str:
+def detect_input_shape(
+    rows: list[dict[str, Any]],
+    primary_metric: str | None = None,
+    covariate_column: str | None = None,
+) -> str:
     """Return 'row_level' or 'aggregated' for a positional table.
 
     Repeated variant names mean row-level data, whose layout must be
-    ``name, outcome [, is_control]`` (or ``name, numerator, denominator [, is_control]``
-    when ``primary_metric == 'ratio'``). A table with repeated names and more columns than that
-    is an aggregated table with duplicate rows, which is rejected rather than misread.
+    ``name, outcome [, covariate] [, is_control]`` (or
+    ``name, numerator, denominator [, is_control]`` when ``primary_metric == 'ratio'``).
+    A table with repeated names and more columns than that is an aggregated table with
+    duplicate rows, which is rejected rather than misread.
     """
     if not rows:
         raise ValueError("Input table is empty.")
@@ -231,6 +278,11 @@ def detect_input_shape(rows: list[dict[str, Any]], primary_metric: str | None = 
     if not names:
         raise ValueError("Input has no variant data: the first column (variant name) is empty.")
     if primary_metric == "ratio":
+        if covariate_column is not None:
+            raise UsageOptionError(
+                "--covariate-column is only supported for row-level conversion_rate or arpu data, "
+                "not ratio."
+            )
         _reject_misplaced_control_column(rows, value_positions=2)
         if len(set(names)) == len(names):
             return "aggregated"
@@ -248,10 +300,18 @@ def detect_input_shape(rows: list[dict[str, Any]], primary_metric: str | None = 
 
     _reject_misplaced_control_column(rows, value_positions=1)
     if len(set(names)) == len(names):
+        if covariate_column is not None:
+            raise UsageOptionError(
+                "--covariate-column requires row-level CSV/XLSX data "
+                "(aggregated inputs have no individual rows)."
+            )
         return "aggregated"
 
-    control_col = _find_control_column(rows, skip_cols=2)
-    data_cols = [c for c in cols if c != control_col]
+    cov_col = (
+        None if covariate_column is None else _resolve_covariate_column(cols, covariate_column)
+    )
+    control_col = _find_control_column(rows, skip_cols=2, exclude_cols={cov_col})
+    data_cols = [c for c in cols if c not in (control_col, cov_col)]
     if len(data_cols) <= 2:
         return "row_level"
     duplicates = sorted({n for n in names if names.count(n) > 1})
@@ -358,7 +418,11 @@ def _build_payload_from_row_level(
         raise ValueError("Row-level input requires at least 2 columns: variant name and outcome.")
     variant_col = cols[0]
     outcome_col = cols[1]
-    control_col = _find_control_column(rows, skip_cols=2)
+    covariate_column = defaults.get("covariate_column")
+    cov_col = (
+        None if covariate_column is None else _resolve_covariate_column(cols, covariate_column)
+    )
+    control_col = _find_control_column(rows, skip_cols=2, exclude_cols={cov_col})
 
     # Group rows by variant, preserving first-appearance order
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -406,23 +470,38 @@ def _build_payload_from_row_level(
     variants: list[dict[str, Any]] = []
     if is_conversion:
         for name, group_rows in groups.items():
-            variants.append(
-                {
-                    "name": name,
-                    "is_control": is_control_by_name[name],
-                    "visitors": len(group_rows),
-                    "conversions": sum(_to_bool(r.get(outcome_col)) for r in group_rows),
-                }
-            )
+            y_arr = np.asarray([_to_bool(r.get(outcome_col)) for r in group_rows], dtype=float)
+            variant_obj: dict[str, Any] = {
+                "name": name,
+                "is_control": is_control_by_name[name],
+                "visitors": len(group_rows),
+                "conversions": int(y_arr.sum()),
+            }
+            if cov_col is not None:
+                x_arr = np.asarray(
+                    [_to_finite_float(r.get(cov_col), cov_col) for r in group_rows],
+                    dtype=float,
+                )
+                variant_obj["covariate_sum"] = float(np.sum(x_arr))
+                variant_obj["covariate_sum_squares"] = float(np.sum(x_arr * x_arr))
+                variant_obj["outcome_covariate_sum"] = float(np.sum(y_arr * x_arr))
+            variants.append(variant_obj)
     else:
         raw_arrays: dict[str, np.ndarray] = {}
+        cov_arrays: dict[str, np.ndarray] = {}
         for name, group_rows in groups.items():
-            values = [
-                _to_finite_float(v, outcome_col)
-                for r in group_rows
-                if (v := r.get(outcome_col)) not in (None, "")
-            ]
+            values: list[float] = []
+            x_vals: list[float] = []
+            for r in group_rows:
+                v = r.get(outcome_col)
+                if v in (None, ""):
+                    continue
+                values.append(_to_finite_float(v, outcome_col))
+                if cov_col is not None:
+                    x_vals.append(_to_finite_float(r.get(cov_col), cov_col))
             raw_arrays[name] = np.asarray(values, dtype=float)
+            if cov_col is not None:
+                cov_arrays[name] = np.asarray(x_vals, dtype=float)
 
         if winsorize is not None:
             arrays, winsor_diag = winsorize_pooled(raw_arrays, winsorize)
@@ -433,16 +512,20 @@ def _build_payload_from_row_level(
         extra_interpretation["arpu_tail_diagnostics"] = row_level_tail_diagnostics(arrays)
 
         for name, arr in arrays.items():
-            variants.append(
-                {
-                    "name": name,
-                    "is_control": is_control_by_name[name],
-                    "visitors": int(arr.size),
-                    "conversions": int(np.sum(arr > 0.0)),
-                    "revenue_sum": float(np.sum(arr)),
-                    "revenue_sum_squares": float(np.sum(arr * arr)),
-                }
-            )
+            variant_obj = {
+                "name": name,
+                "is_control": is_control_by_name[name],
+                "visitors": int(arr.size),
+                "conversions": int(np.sum(arr > 0.0)),
+                "revenue_sum": float(np.sum(arr)),
+                "revenue_sum_squares": float(np.sum(arr * arr)),
+            }
+            if cov_col is not None:
+                x_arr = cov_arrays[name]
+                variant_obj["covariate_sum"] = float(np.sum(x_arr))
+                variant_obj["covariate_sum_squares"] = float(np.sum(x_arr * x_arr))
+                variant_obj["outcome_covariate_sum"] = float(np.sum(arr * x_arr))
+            variants.append(variant_obj)
 
         if bootstrap_samples is not None:
             control_names = [n for n, is_c in is_control_by_name.items() if is_c]
@@ -476,6 +559,8 @@ def _build_payload_from_row_level(
                 extra_interpretation["bootstrap_ci"] = boot_ci
 
     column_roles = {"variant": variant_col, "outcome": outcome_col}
+    if cov_col:
+        column_roles["covariate"] = cov_col
     if control_col:
         column_roles["is_control"] = control_col
     return _build_final_payload(
@@ -675,7 +760,10 @@ def build_payload_from_rows(
     defaults: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     primary_metric = (defaults or {}).get("primary_metric")
-    shape = detect_input_shape(rows, primary_metric=primary_metric)
+    covariate_column = (defaults or {}).get("covariate_column")
+    shape = detect_input_shape(
+        rows, primary_metric=primary_metric, covariate_column=covariate_column
+    )
     if shape == "row_level":
         return _build_payload_from_row_level(rows, defaults)
     return _build_payload_from_aggregated(rows, defaults)

@@ -68,7 +68,7 @@ def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
                 f"  - Multi-arm expected loss: {_fmt_float(comp.multi_arm_expected_loss, 6)}"
             )
     elif method == "fixed":
-        if comp.metric == "arpu":
+        if comp.degrees_of_freedom is not None:
             lines.append(
                 f"  - Welch t-statistic: {_fmt_float(comp.test_statistic, 4)} "
                 f"(df={_fmt_float(comp.degrees_of_freedom, 2)})"
@@ -233,6 +233,20 @@ def build_markdown_report(result: AnalysisResult) -> str:
             lines.append(
                 f"- ARPU tail warning (`heavy_tailed_revenue`): "
                 f"max CV={_fmt_float(tail_diag.get('max_cv'), 2)} (> 3.0)"
+            )
+    cuped = interp.get("cuped")
+    if isinstance(cuped, dict) and cuped.get("enabled"):
+        lines.append(
+            f"- CUPED variance reduction: theta={_fmt_float(cuped.get('theta'), 4)}, "
+            f"R^2={_fmt_float(cuped.get('r_squared'), 4)}, "
+            f"variance reduction={_fmt_float(cuped.get('variance_reduction_pct'), 2)}%, "
+            f"covariate balance p={_fmt_float(cuped.get('covariate_balance_p_value'), 6)}"
+        )
+        if cuped.get("covariate_imbalanced"):
+            lines.append(
+                "- CUPED covariate balance warning (`covariate_imbalance`): "
+                "pre-experiment covariate differs significantly across arms (p < 0.001); "
+                "verify randomization and ensure the covariate was measured strictly pre-assignment."
             )
 
     lines.extend(["", "## Variant Comparisons"])

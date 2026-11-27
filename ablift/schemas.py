@@ -123,6 +123,25 @@ def _variant_input_schema(*, submetric: bool = False) -> dict[str, Any]:
                 "on every variant and cannot be combined with top-level expected_split."
             ),
         }
+        properties["covariate_sum"] = {
+            "type": ["number", "null"],
+            "description": (
+                "Optional sum of pre-experiment covariate X for CUPED variance reduction. "
+                "Must be provided alongside covariate_sum_squares and outcome_covariate_sum on every variant."
+            ),
+        }
+        properties["covariate_sum_squares"] = {
+            "type": ["number", "null"],
+            "description": (
+                "Optional sum of squared pre-experiment covariate X^2 for CUPED variance reduction."
+            ),
+        }
+        properties["outcome_covariate_sum"] = {
+            "type": ["number", "null"],
+            "description": (
+                "Optional sum of outcome * pre-experiment covariate (Y * X) for CUPED variance reduction."
+            ),
+        }
 
     return {
         "type": "object",

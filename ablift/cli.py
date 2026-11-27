@@ -210,6 +210,11 @@ def _reject_row_only_options_for_json(merged_defaults: dict[str, Any]) -> None:
         raise UsageOptionError(
             "--bootstrap-samples requires row-level ARPU CSV/XLSX input; aggregated JSON inputs have no rows to resample."
         )
+    if merged_defaults.get("covariate_column") is not None:
+        raise UsageOptionError(
+            "--covariate-column requires row-level CSV/XLSX input; for JSON inputs, supply "
+            "covariate_sum, covariate_sum_squares, and outcome_covariate_sum per variant."
+        )
 
 
 def _load_analysis_payload(
@@ -480,6 +485,15 @@ def cli() -> None:
     ),
 )
 @click.option(
+    "--covariate-column",
+    type=str,
+    default=None,
+    help=(
+        "Pre-experiment covariate column name or 1-based column index for CUPED variance "
+        "reduction on row-level conversion_rate or arpu CSV/XLSX input."
+    ),
+)
+@click.option(
     "--enable-recommendation/--no-recommendation",
     default=None,
     help="Enable or disable automated Bayesian recommendation output (overrides input and config).",
@@ -546,6 +560,7 @@ def analyze(
     primary_metric: str | None,
     winsorize: float | None,
     bootstrap_samples: int | None,
+    covariate_column: str | None,
     enable_recommendation: bool | None,
     prob_threshold: float | None,
     max_expected_loss: float | None,
@@ -592,6 +607,7 @@ def analyze(
         "primary_metric": primary_metric,
         "winsorize": winsorize,
         "bootstrap_samples": bootstrap_samples,
+        "covariate_column": covariate_column,
         "decision_policy": decision_policy,
         "alpha": alpha,
         "sequential_tau": sequential_tau,
