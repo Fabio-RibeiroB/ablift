@@ -275,6 +275,10 @@ def aggregated_arpu_tail_diagnostics(
     }
 
 
+# Resampled observations per bootstrap run (resamples x rows): about 10 s of CPU at the limit.
+MAX_BOOTSTRAP_DRAWS = 1_000_000_000
+
+
 def bootstrap_mean_diff_ci(
     control: np.ndarray,
     treatment: np.ndarray,
@@ -290,6 +294,13 @@ def bootstrap_mean_diff_ci(
         raise ValueError(f"alpha must be in (0, 1), got {alpha!r}.")
     if control.size < 2 or treatment.size < 2:
         raise ValueError("Bootstrap CI requires at least 2 observations per arm.")
+    rows = control.size + treatment.size
+    if n_bootstrap * rows > MAX_BOOTSTRAP_DRAWS:
+        raise ValueError(
+            f"bootstrap_samples={n_bootstrap:,} over {rows:,} rows exceeds the "
+            f"{MAX_BOOTSTRAP_DRAWS:,} resampled-row limit (minutes of CPU); use at most "
+            f"{max(100, MAX_BOOTSTRAP_DRAWS // rows):,}. 10,000 resamples is usually enough."
+        )
 
     rng = np.random.default_rng(seed)
     n_c = control.size

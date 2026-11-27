@@ -9,14 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - `ablift power`: power analysis for a fixed sample size. Give `--relative-mde` to get the power, or leave it out to get the minimum detectable effect at `--power` (default 0.8). It supports conversion rate and ARPU, the `fixed` (default) and `sequential` methods, and Bonferroni across `--n-variants`. Fixed-method power matches statsmodels `NormalIndPower`, and `duration`'s sample size round-trips to the planned power and MDE. The output contract is `ablift schema power-output`.
 
+### Fixed
+- Very large `--samples` crashed with a Python `MemoryError` traceback (200M samples needs 1.5 GB per arm). Bayesian runs now reject `samples × variants` above 20,000,000 with a message giving the maximum, and any out-of-memory condition becomes a clean `Error:` with exit code 1.
+- `--bootstrap-samples` had no upper bound: 2,000,000 resamples of 40,000 rows ran for minutes with no output. Requests above 1,000,000,000 resampled rows are now a usage error (exit 2) that states the maximum for the data.
+- Fixed-horizon conversion intervals used the Wald formula, which collapses to `[0, 0]` at 0% or 100% conversion (claiming certainty from e.g. 0/10 vs 0/10) and undercovers for rare events. They now use Newcombe's hybrid score interval.
+- Fixed-horizon conversion p-values used the normal approximation even for sparse tables, so 0/50 vs 4/50 was called significant (p ≈ 0.04). When any expected cell count is below 5, Fisher's exact test is used instead (p ≈ 0.12), and the `sparse_conversions` risk flag is raised.
+
+### Changed
+- `duration --method bayesian` is about 25x faster: simulations are vectorised, and the earliest day reaching the assurance target is found by doubling then bisecting instead of scanning every day. A 1% MDE over 365 days went from 37 s to 1.5 s; results agree with the previous scan within simulation noise.
+
 ### Documentation
 - README rewritten as a front page with a demo image rendered from a real run; reference material moved to `docs/` (inputs, methods, duration planning, agents).
 - `tests/test_docs.py`, also run as a pre-commit hook, fails when a CLI command or option is undocumented, a documented example stops running, a link breaks, the install line does not match the release state, or the demo image is stale (`make docs`).
 - Added `CONTRIBUTING.md`, issue and pull request templates, Dependabot for GitHub Actions and `CITATION.cff`.
-
-### Fixed
-- Fixed-horizon conversion intervals used the Wald formula, which collapses to `[0, 0]` at 0% or 100% conversion (claiming certainty from e.g. 0/10 vs 0/10) and undercovers for rare events. They now use Newcombe's hybrid score interval.
-- Fixed-horizon conversion p-values used the normal approximation even for sparse tables, so 0/50 vs 4/50 was called significant (p ≈ 0.04). When any expected cell count is below 5, Fisher's exact test is used instead (p ≈ 0.12), and the `sparse_conversions` risk flag is raised.
 
 ## [0.5.0] - Unreleased
 

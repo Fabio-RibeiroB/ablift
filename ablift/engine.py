@@ -34,6 +34,10 @@ from .stats import (
 
 SUPPORTED_METRICS = {"conversion_rate", "arpu", "ratio"}
 
+# Posterior draws held in memory at once (samples x arms). 20M float64 draws is about 160 MB
+# per array; the default of 50,000 samples is far below this.
+MAX_POSTERIOR_DRAWS = 20_000_000
+
 
 def _has_cuped(variants: list[VariantInput]) -> bool:
     return any(
@@ -445,6 +449,13 @@ def validate_input(inp: AnalysisInput) -> None:
         raise ValueError("sequential_tau must be positive.")
     if inp.samples <= 0:
         raise ValueError("samples must be positive.")
+    if inp.method == "bayesian" and inp.samples * len(inp.variants) > MAX_POSTERIOR_DRAWS:
+        limit = MAX_POSTERIOR_DRAWS // len(inp.variants)
+        raise ValueError(
+            f"samples={inp.samples:,} across {len(inp.variants)} variants exceeds the "
+            f"{MAX_POSTERIOR_DRAWS:,} posterior-draw memory limit; use at most {limit:,}. "
+            "The default of 50,000 already keeps Monte Carlo error well below 1 percentage point."
+        )
 
     if inp.method not in {"bayesian", "sequential", "fixed"}:
         raise ValueError("method must be 'bayesian', 'sequential', or 'fixed'.")
@@ -1848,12 +1859,16 @@ def analyze_fixed_cuped(
 
 def sample_mean_posterior_from_moments(
     n: int,
-    mean: float,
-    ss: float,
-    num_samples: int,
+    mean: float | np.ndarray,
+    ss: float | np.ndarray,
+    num_samples: int | tuple[int, ...],
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Normal-Inverse-Gamma posterior mean draws from sample size, mean, and centered SS."""
+    """Normal-Inverse-Gamma posterior mean draws from sample size, mean, and centered SS.
+
+    ``mean`` and ``ss`` may be arrays that broadcast against ``num_samples`` (e.g. shape
+    ``(sims, 1)`` with ``num_samples=(sims, draws)``) to draw many posteriors at once.
+    """
     mu0 = 0.0
     kappa0 = 1e-6
     alpha0 = 1.0
@@ -1862,7 +1877,7 @@ def sample_mean_posterior_from_moments(
     kappa_n = kappa0 + n
     mu_n = (kappa0 * mu0 + n * mean) / kappa_n
     alpha_n = alpha0 + 0.5 * n
-    beta_n = beta0 + 0.5 * max(ss, 0.0) + (kappa0 * n * ((mean - mu0) ** 2)) / (2 * kappa_n)
+    beta_n = beta0 + 0.5 * np.maximum(ss, 0.0) + (kappa0 * n * ((mean - mu0) ** 2)) / (2 * kappa_n)
 
     gamma_samples = rng.gamma(shape=alpha_n, scale=1.0, size=num_samples)
     sigma2_samples = beta_n / np.clip(gamma_samples, 1e-18, None)

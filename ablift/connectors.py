@@ -10,7 +10,12 @@ from typing import Any
 import numpy as np
 from openpyxl import load_workbook
 
-from .stats import bootstrap_mean_diff_ci, row_level_tail_diagnostics, winsorize_pooled
+from .stats import (
+    MAX_BOOTSTRAP_DRAWS,
+    bootstrap_mean_diff_ci,
+    row_level_tail_diagnostics,
+    winsorize_pooled,
+)
 
 
 class UsageOptionError(ValueError):
@@ -541,6 +546,14 @@ def _build_payload_from_row_level(
                 raw_seed = defaults.get("random_seed")
                 base_seed = 7 if raw_seed is None else int(raw_seed)
                 control_arr = arrays[control_names[0]]
+                row_count = sum(control_arr.size + arrays[t].size for t in treatment_names)
+                if bootstrap_samples * row_count > MAX_BOOTSTRAP_DRAWS:
+                    raise UsageOptionError(
+                        f"--bootstrap-samples {bootstrap_samples:,} would resample "
+                        f"{bootstrap_samples * row_count:,} rows, over the {MAX_BOOTSTRAP_DRAWS:,} "
+                        f"limit (minutes of CPU); use at most {max(100, MAX_BOOTSTRAP_DRAWS // row_count):,}"
+                        " for this data. 10,000 resamples is usually enough."
+                    )
                 boot_ci: dict[str, dict[str, Any]] = {}
                 for idx, t_name in enumerate(treatment_names):
                     lo, hi = bootstrap_mean_diff_ci(
