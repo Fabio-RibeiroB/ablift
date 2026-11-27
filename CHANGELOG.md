@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 <!-- towncrier release notes start -->
 
+## [0.5.0a3] - 2026-11-27
+
+Third pre-release (`pip install --pre ablift`). **Breaking:** recommendations are now opt-in (`--recommend`), `duration` and `power` require `--method`, and method-specific settings are rejected or reported as `null` when the method does not use them. See Changed.
+
+### Added
+- `ablift duration` and `ablift power` now accept `--expected-split` (and an `expected_split` field or column in duration `--input` files) to plan sample sizes, run duration, power, and MDE under unequal traffic allocations (such as 90/10 rollouts) across all methods and both `conversion_rate` and `arpu` metrics. Duration and power outputs now report `n_by_variant` and `n_total` alongside `n_per_variant`, and `ablift power` adds `--n-total` so unequal-split plans round-trip cleanly. ([#36](https://github.com/Fabio-RibeiroB/ablift/issues/36))
+- `ablift analyze` now reports which `pyproject.toml` it took defaults from in `analysis_settings.config_source` (an absolute path, or `null` when no `[tool.ablift]` table was applied), and a new `--no-config` flag ignores that file entirely so results depend only on the input and flags.
+- `ablift analyze` output now has a top-level `risk_flags` list that is always present, even when no recommendation is requested. It reports data-quality and experiment risks such as `srm_detected`, `guardrail_failure`, `covariate_imbalance`, `heavy_tailed_revenue` and `sparse_conversions`.
+
+### Changed
+- `ablift analyze` now leaves `recommendation` as `null` by default for every method. Before, `sequential` and `fixed` always produced one. To get a recommendation, pass `--recommend` or set `decision_policy.enabled = true`. The `--enable-recommendation/--no-recommendation` flags are renamed to `--recommend/--no-recommend`. `analyze` now rejects `--sequential-tau` unless the method is `sequential`, and rejects Bayesian-only flags (`--samples`, `--prob-threshold`, `--max-expected-loss`) for `sequential` as well as `fixed`. `ablift example-input` no longer includes a `decision_policy`, and the Markdown report is now titled "A/B Analysis Report".
+- `ablift analyze` now reports `analysis_settings.samples` and `analysis_settings.random_seed` as `null` when no posterior sampling happened (`sequential` and `fixed`; `random_seed` stays set when a row-level `--bootstrap-samples` CI used it). JSON input is now held to the same rules as the CLI flags: `samples` or `random_seed` with a `sequential`/`fixed` method, or `sequential_tau` with `bayesian`, is an error instead of being silently ignored. `[tool.ablift]` project defaults for these fields only apply to the method that uses them, so they never block `--method sequential` or `--method fixed`.
+- `ablift duration` and `ablift power` no longer pick a method for you. Before, `duration` defaulted to `sequential` and `power` to `fixed`, while `analyze` defaults to `bayesian`, so running them in a row without `--method` silently switched frameworks. Now pass `--method sequential` if you'll check results as they come in, or `--method fixed` for a single planned look (`duration` also takes `bayesian`); for `duration`, a `method` field in the `--input` file counts too. Leaving it out is a usage error (exit code 2). `analyze` keeps its `bayesian` default.
+
+### Documentation
+- Added `docs/sql.md` with a verified ANSI SQL reference query (and optional CUPED variant) for aggregating raw exposure and order tables into `ablift`'s aggregated CSV and JSON inputs, along with common pitfalls to avoid. ([#42](https://github.com/Fabio-RibeiroB/ablift/issues/42))
+
 ## [0.5.0a2] - 2026-11-27
 
 Second pre-release (`pip install --pre ablift`).
