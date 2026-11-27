@@ -22,6 +22,28 @@ from .models import (
     SrmResult,
     VariantInput,
 )
+from .stats import delta_ratio_z_test, ratio_mean_and_var, validate_ratio_aggregates
+
+SUPPORTED_METRICS = {"conversion_rate", "arpu", "ratio"}
+
+
+def _variant_ratio_mean_and_var(
+    variant: VariantInput, *, label: str = "variant"
+) -> tuple[float, float]:
+    assert variant.numerator_sum is not None
+    assert variant.numerator_sum_squares is not None
+    assert variant.denominator_sum is not None
+    assert variant.denominator_sum_squares is not None
+    assert variant.numerator_denominator_sum is not None
+    return ratio_mean_and_var(
+        variant.visitors,
+        float(variant.numerator_sum),
+        float(variant.numerator_sum_squares),
+        float(variant.denominator_sum),
+        float(variant.denominator_sum_squares),
+        float(variant.numerator_denominator_sum),
+        label=label,
+    )
 
 
 def parse_payload(payload: dict) -> AnalysisInput:
@@ -182,8 +204,10 @@ def _parse_payload(payload: dict) -> AnalysisInput:
 
 
 def _validate_variant_metrics(variants: list[VariantInput], metric: str, label: str) -> None:
-    if metric not in {"conversion_rate", "arpu"}:
-        raise ValueError(f"{label} metric must be 'conversion_rate' or 'arpu', got {metric!r}.")
+    if metric not in SUPPORTED_METRICS:
+        raise ValueError(
+            f"{label} metric must be 'conversion_rate', 'arpu', or 'ratio', got {metric!r}."
+        )
     for variant in variants:
         if isinstance(variant.visitors, bool) or variant.visitors <= 0:
             raise ValueError(f"{label}: visitors must be positive for {variant.name}.")
@@ -195,7 +219,7 @@ def _validate_variant_metrics(variants: list[VariantInput], metric: str, label: 
                     f"{label}: conversions cannot exceed visitors for {variant.name}. "
                     "This usually means the success metric is not binary per denominator unit."
                 )
-        else:
+        elif metric == "arpu":
             if variant.revenue_sum is None or variant.revenue_sum_squares is None:
                 raise ValueError(
                     f"{label}: ARPU requires revenue_sum and revenue_sum_squares for {variant.name}."
@@ -212,6 +236,33 @@ def _validate_variant_metrics(variants: list[VariantInput], metric: str, label: 
                     raise ValueError(
                         f"{label}: {field_name} must be a finite number for {variant.name}."
                     )
+        else:
+            ratio_fields = (
+                ("numerator_sum", variant.numerator_sum),
+                ("numerator_sum_squares", variant.numerator_sum_squares),
+                ("denominator_sum", variant.denominator_sum),
+                ("denominator_sum_squares", variant.denominator_sum_squares),
+                ("numerator_denominator_sum", variant.numerator_denominator_sum),
+            )
+            missing = [fname for fname, val in ratio_fields if val is None]
+            if missing:
+                raise ValueError(
+                    f"{label}: ratio metric requires {', '.join(missing)} for {variant.name}."
+                )
+            assert variant.numerator_sum is not None
+            assert variant.numerator_sum_squares is not None
+            assert variant.denominator_sum is not None
+            assert variant.denominator_sum_squares is not None
+            assert variant.numerator_denominator_sum is not None
+            validate_ratio_aggregates(
+                variant.visitors,
+                variant.numerator_sum,
+                variant.numerator_sum_squares,
+                variant.denominator_sum,
+                variant.denominator_sum_squares,
+                variant.numerator_denominator_sum,
+                label=f"{label} ({variant.name})",
+            )
 
 
 def _resolve_submetric_variants(
@@ -252,6 +303,11 @@ def _resolve_submetric_variants(
                 revenue_sum=sub.revenue_sum,
                 revenue_sum_squares=sub.revenue_sum_squares,
                 is_control=primary.is_control,
+                numerator_sum=sub.numerator_sum,
+                numerator_sum_squares=sub.numerator_sum_squares,
+                denominator_sum=sub.denominator_sum,
+                denominator_sum_squares=sub.denominator_sum_squares,
+                numerator_denominator_sum=sub.numerator_denominator_sum,
             )
         )
 
@@ -285,7 +341,7 @@ def _validate_guardrail_item(inp: AnalysisInput, item: GuardrailInput) -> None:
         if item.metric is None:
             raise ValueError(
                 f"{label}: statistical guardrail with 'variants' requires 'metric' "
-                "('conversion_rate' or 'arpu')."
+                "('conversion_rate', 'arpu', or 'ratio')."
             )
         _resolve_submetric_variants(inp.variants, item.variants, item.metric, label)
     else:
@@ -334,8 +390,8 @@ def validate_input(inp: AnalysisInput) -> None:
         raise ValueError("method must be 'bayesian', 'sequential', or 'fixed'.")
     if inp.method == "fixed" and inp.sequential_tau is not None:
         raise ValueError("sequential_tau only applies when method is 'sequential'.")
-    if inp.primary_metric not in {"conversion_rate", "arpu"}:
-        raise ValueError("primary_metric must be 'conversion_rate' or 'arpu'.")
+    if inp.primary_metric not in SUPPORTED_METRICS:
+        raise ValueError("primary_metric must be 'conversion_rate', 'arpu', or 'ratio'.")
 
     if inp.method == "bayesian" and inp.decision_policy.enabled:
         if inp.decision_policy.thresholds is None:
@@ -353,6 +409,8 @@ def validate_input(inp: AnalysisInput) -> None:
                 raise ValueError(
                     f"ARPU requires revenue_sum and revenue_sum_squares for {variant.name}."
                 )
+    elif inp.primary_metric == "ratio":
+        _validate_variant_metrics(inp.variants, "ratio", "Primary metric")
 
     for item in inp.guardrails:
         _validate_guardrail_item(inp, item)
@@ -538,9 +596,13 @@ def _run_metric_comparisons(
     if inp.method == "fixed":
         if inp.primary_metric == "conversion_rate":
             return analyze_fixed_conversion(inp, control, treatments), None
+        if inp.primary_metric == "ratio":
+            return analyze_fixed_ratio(inp, control, treatments), None
         return analyze_fixed_arpu(inp, control, treatments), None
     if inp.primary_metric == "conversion_rate":
         return analyze_sequential_conversion(inp, control, treatments), None
+    if inp.primary_metric == "ratio":
+        return analyze_sequential_ratio(inp, control, treatments), None
     return analyze_sequential_arpu(inp, control, treatments), None
 
 
@@ -854,6 +916,25 @@ def _draw_bayesian_samples(
         ]
         control_rate = control.conversions / control.visitors
         treatment_rates = [t.conversions / t.visitors for t in treatments]
+    elif inp.primary_metric == "ratio":
+        control_rate, c_var = _variant_ratio_mean_and_var(
+            control, label=f"Variant {control.name!r}"
+        )
+        control_samples = (
+            rng.normal(control_rate, math.sqrt(c_var), size=inp.samples)
+            if c_var > 0.0
+            else np.full(inp.samples, control_rate, dtype=float)
+        )
+        treatment_rates = []
+        treatment_samples_list = []
+        for t in treatments:
+            t_rate, t_var = _variant_ratio_mean_and_var(t, label=f"Variant {t.name!r}")
+            treatment_rates.append(t_rate)
+            treatment_samples_list.append(
+                rng.normal(t_rate, math.sqrt(t_var), size=inp.samples)
+                if t_var > 0.0
+                else np.full(inp.samples, t_rate, dtype=float)
+            )
     else:
         control_samples = sample_mean_posterior(
             control.visitors,
@@ -918,6 +999,8 @@ def build_analysis_settings(inp: AnalysisInput) -> AnalysisSettings:
             "alpha0": 1.0,
             "beta0": 1.0,
         }
+    elif inp.method == "bayesian" and inp.primary_metric == "ratio":
+        priors = {"family": "delta_normal_asymptotic"}
     else:
         priors = {"family": "not_applicable"}
 
@@ -1099,6 +1182,31 @@ def analyze_sequential_arpu(
                 metric="arpu",
                 control_value=c_mean,
                 treatment_value=t_mean,
+                se=se,
+                alpha_adj=alpha_adj,
+            )
+        )
+    return out
+
+
+def analyze_sequential_ratio(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> list[ComparisonResult]:
+    """Always-valid mSPRT for ratio metrics using the bivariate Delta-method SE."""
+    alpha_adj = per_comparison_alpha(inp.alpha, len(treatments))
+    c_ratio, c_var = _variant_ratio_mean_and_var(control, label=f"Variant {control.name!r}")
+    out: list[ComparisonResult] = []
+    for treatment in treatments:
+        t_ratio, t_var = _variant_ratio_mean_and_var(treatment, label=f"Variant {treatment.name!r}")
+        se = math.sqrt(max(c_var + t_var, 1e-18))
+        out.append(
+            _sequential_comparison(
+                inp=inp,
+                control=control,
+                treatment=treatment,
+                metric="ratio",
+                control_value=c_ratio,
+                treatment_value=t_ratio,
                 se=se,
                 alpha_adj=alpha_adj,
             )
@@ -1386,6 +1494,50 @@ def analyze_fixed_arpu(
                 raw_p_value=float(raw_p),
                 test_statistic=float(t_stat) if t_stat is not None else None,
                 degrees_of_freedom=float(df) if df is not None else None,
+                significant=significant,
+                ci_low=ci_low,
+                ci_high=ci_high,
+            )
+        )
+    return out
+
+
+def analyze_fixed_ratio(
+    inp: AnalysisInput, control: VariantInput, treatments: list[VariantInput]
+) -> list[ComparisonResult]:
+    """Fixed-horizon Delta-method two-sided z-test with Bonferroni-adjusted CIs."""
+    n_comparisons = len(treatments)
+    alpha_adj = per_comparison_alpha(inp.alpha, n_comparisons)
+    z_crit = NormalDist().inv_cdf(1.0 - alpha_adj / 2.0)
+    c_ratio, c_var = _variant_ratio_mean_and_var(control, label=f"Variant {control.name!r}")
+
+    out: list[ComparisonResult] = []
+    for treatment in treatments:
+        t_ratio, t_var = _variant_ratio_mean_and_var(treatment, label=f"Variant {treatment.name!r}")
+        diff = t_ratio - c_ratio
+        raw_p, z_stat, se = delta_ratio_z_test(c_ratio, c_var, t_ratio, t_var)
+        adj_p = min(1.0, raw_p * n_comparisons)
+        significant = bool(adj_p <= inp.alpha)
+
+        if se <= 0.0:
+            ci_low, ci_high = float(diff), float(diff)
+        else:
+            ci_low = float(diff - z_crit * se)
+            ci_high = float(diff + z_crit * se)
+
+        out.append(
+            ComparisonResult(
+                treatment=treatment.name,
+                control=control.name,
+                metric="ratio",
+                control_rate=c_ratio,
+                treatment_rate=t_ratio,
+                absolute_lift=diff,
+                relative_lift=diff / max(abs(c_ratio), 1e-12),
+                p_value=float(adj_p),
+                raw_p_value=float(raw_p),
+                test_statistic=float(z_stat) if z_stat is not None else None,
+                degrees_of_freedom=None,
                 significant=significant,
                 ci_low=ci_low,
                 ci_high=ci_high,

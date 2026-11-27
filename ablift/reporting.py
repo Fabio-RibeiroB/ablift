@@ -14,12 +14,13 @@ def _fmt_float(value: float | None, digits: int = 6) -> str:
 
 
 def _comparison_lines(comp: ComparisonResult, method: str) -> list[str]:
-    metric_label = "CR" if comp.metric == "conversion_rate" else "ARPU"
     if comp.metric == "conversion_rate":
+        metric_label = "CR"
         control_display = _fmt_pct(comp.control_rate)
         treatment_display = _fmt_pct(comp.treatment_rate)
         abs_lift_display = _fmt_pct(comp.absolute_lift)
     else:
+        metric_label = "Ratio" if comp.metric == "ratio" else "ARPU"
         control_display = _fmt_float(comp.control_rate, 6)
         treatment_display = _fmt_float(comp.treatment_rate, 6)
         abs_lift_display = _fmt_float(comp.absolute_lift, 6)

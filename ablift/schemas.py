@@ -77,6 +77,31 @@ def _variant_input_schema(*, submetric: bool = False) -> dict[str, Any]:
                 "Required when metric is 'arpu'."
             ),
         },
+        "numerator_sum": {
+            "type": ["number", "null"],
+            "description": "Sum of per-unit numerators. Required when metric is 'ratio'.",
+        },
+        "numerator_sum_squares": {
+            "type": ["number", "null"],
+            "description": "Sum of squared per-unit numerators. Required when metric is 'ratio'.",
+        },
+        "denominator_sum": {
+            "type": ["number", "null"],
+            "description": (
+                "Sum of per-unit denominators (must be positive). Required when metric is 'ratio'."
+            ),
+        },
+        "denominator_sum_squares": {
+            "type": ["number", "null"],
+            "description": "Sum of squared per-unit denominators. Required when metric is 'ratio'.",
+        },
+        "numerator_denominator_sum": {
+            "type": ["number", "null"],
+            "description": (
+                "Sum of per-unit numerator * denominator cross-products. "
+                "Required when metric is 'ratio'."
+            ),
+        },
         "is_control": {
             "type": "boolean",
             "description": (
@@ -113,7 +138,7 @@ def _comparison_result_schema() -> dict[str, Any]:
         "properties": {
             "treatment": {"type": "string"},
             "control": {"type": "string"},
-            "metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+            "metric": {"type": "string", "enum": ["conversion_rate", "arpu", "ratio"]},
             "control_rate": {"type": "number"},
             "treatment_rate": {"type": "number"},
             "absolute_lift": {"type": "number"},
@@ -227,7 +252,7 @@ def build_analyze_input_schema() -> dict[str, Any]:
                 ),
                 "properties": {
                     "name": {"type": "string", "minLength": 1},
-                    "metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+                    "metric": {"type": "string", "enum": ["conversion_rate", "arpu", "ratio"]},
                     "direction": {
                         "type": "string",
                         "enum": ["decrease", "increase"],
@@ -255,7 +280,7 @@ def build_analyze_input_schema() -> dict[str, Any]:
                 ),
                 "properties": {
                     "name": {"type": "string", "minLength": 1},
-                    "metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+                    "metric": {"type": "string", "enum": ["conversion_rate", "arpu", "ratio"]},
                     "variants": {
                         "type": "array",
                         "minItems": 2,
@@ -302,7 +327,7 @@ def build_analyze_input_schema() -> dict[str, Any]:
             },
             "primary_metric": {
                 "type": "string",
-                "enum": ["conversion_rate", "arpu"],
+                "enum": ["conversion_rate", "arpu", "ratio"],
                 "default": "conversion_rate",
                 "description": "Primary metric model.",
             },
@@ -420,7 +445,10 @@ def build_analyze_output_schema() -> dict[str, Any]:
             "AnalysisSettings": {
                 "type": "object",
                 "properties": {
-                    "primary_metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+                    "primary_metric": {
+                        "type": "string",
+                        "enum": ["conversion_rate", "arpu", "ratio"],
+                    },
                     "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
                     "multiple_comparisons": {
                         "type": "object",
@@ -510,7 +538,7 @@ def build_analyze_output_schema() -> dict[str, Any]:
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
-                    "metric": {"type": "string", "enum": ["conversion_rate", "arpu"]},
+                    "metric": {"type": "string", "enum": ["conversion_rate", "arpu", "ratio"]},
                     "comparisons": {
                         "type": "array",
                         "items": {"$ref": "#/$defs/ComparisonResult"},

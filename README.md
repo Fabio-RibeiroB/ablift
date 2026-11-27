@@ -122,14 +122,15 @@ Use `primary_metric: "arpu"` (average revenue per visitor) when you have aggrega
 - `revenue_sum`
 - `revenue_sum_squares` (needed to estimate variance)
 
-If your metric can happen multiple times per unit and the count can exceed the denominator, it is not a fit for the `conversion_rate` model. For example:
-- visits and total clicks across all visits
-- users and page views
-- sessions and multiple add-to-cart events
+Use `primary_metric: "ratio"` when your randomization unit (e.g. `visitors` / users) differs from the metric denominator — such as click-through rate (clicks / impressions), average order value (revenue / orders), or pages per session. `ablift` estimates the variance via the bivariate Delta method (Deng, Knoblich & Lu 2018) across randomization units so intra-user correlation is accounted for accurately across `bayesian`, `sequential`, and `fixed` modes, as well as statistical guardrails and secondary metrics.
 
-In those cases, either:
-- redefine the outcome as binary per unit, such as "visit with at least one click"
-- or use a different metric/model outside the current scope of this tool
+For `primary_metric: "ratio"`, provide either:
+- **Row-level CSV/XLSX** (one row per randomization unit) with `--primary-metric ratio` and columns `name, numerator, denominator [, is_control]` (per-unit denominator may be `0`, e.g. users with zero orders)
+- **Aggregated JSON/CSV/XLSX** with per-variant sufficient statistics:
+  - `visitors` (at least `2` randomization units)
+  - `numerator_sum`, `numerator_sum_squares`
+  - `denominator_sum` (must be positive), `denominator_sum_squares`
+  - `numerator_denominator_sum` ($\sum_i Y_i X_i$)
 
 ## Input rules
 
@@ -145,17 +146,19 @@ For analysis inputs:
 - at least 2 variants are required
 - exactly 1 variant must have `is_control: true`
 - `method` must be `bayesian`, `sequential`, or `fixed`
-- `primary_metric` must be `conversion_rate` or `arpu`
-- `visitors` must be a positive integer
+- `primary_metric` must be `conversion_rate`, `arpu`, or `ratio`
+- `visitors` must be a positive integer (at least `2` for `ratio`)
 - `conversions` must be a non-negative integer and cannot exceed `visitors`
 - `alpha` must be in `(0, 1)`; `sequential_tau` must be positive (and is only valid for `sequential`)
 - for `arpu`, each variant must also include `revenue_sum` and `revenue_sum_squares`
+- for `ratio`, each variant must include `numerator_sum`, `numerator_sum_squares`, `denominator_sum`, `denominator_sum_squares`, and `numerator_denominator_sum`
 
 Bayesian defaults:
 - posterior sample count defaults to `50000`
 - random seed defaults to `7`
 - conversion-rate prior is `Beta(1, 1)`
 - ARPU prior is a weak `Normal-Inverse-Gamma` prior with `mu0=0`, `kappa0=1e-6`, `alpha0=1`, `beta0=1`
+- ratio posterior uses an asymptotic normal approximation parameterized by the Delta-method variance (`delta_normal_asymptotic`)
 
 Bayesian recommendations require an explicit decision policy, either in the input payload, via `[tool.ablift]` in `pyproject.toml`, or via CLI flags:
 - `--enable-recommendation`
@@ -164,7 +167,7 @@ Bayesian recommendations require an explicit decision policy, either in the inpu
 
 Sequential defaults:
 - `alpha` defaults to `0.05`
-- `sequential_tau` (CLI `--sequential-tau`) is the mSPRT mixing parameter: the prior standard deviation of the effect on the absolute scale. It defaults to 10% of the control baseline (conversion rate or ARPU). Pass it explicitly if you expect much larger or smaller effects.
+- `sequential_tau` (CLI `--sequential-tau`) is the mSPRT mixing parameter: the prior standard deviation of the effect on the absolute scale. It defaults to 10% of the control baseline (conversion rate, ARPU, or ratio). Pass it explicitly if you expect much larger or smaller effects.
 - You may look at results as often as you like: the false-positive rate stays at `alpha`.
 
 Fixed-horizon defaults (`--method fixed`):
@@ -183,13 +186,13 @@ Internal field meanings:
 Top-level fields:
 - `experiment_name` (str)
 - `method` (`"bayesian"`, `"sequential"`, or `"fixed"`)
-- `primary_metric` (`"conversion_rate"` or `"arpu"`)
+- `primary_metric` (`"conversion_rate"`, `"arpu"`, or `"ratio"`)
 - `alpha` (float, default `0.05`)
 - `sequential_tau` (optional float, sequential mode; default 10% of the control baseline)
 - `variants` (list): exactly one row must include `"is_control": true`
 - `expected_split` (optional): expected traffic allocation weights for the SRM check, either as a list of positive numbers matching `variants` order (e.g. `[0.9, 0.1]` or `[90, 10]`) or an object mapping each variant name to a positive number (e.g. `{"control": 0.8, "v1": 0.2}`). Weights are normalized to sum to `1.0`. Defaults to an equal `1/k` split when omitted. Cannot be combined with per-variant `expected_share`.
 - `guardrails` (optional list): supports both **statistical per-variant guardrails** (`metric` + `variants`) and backwards-compatible **threshold guardrails** (`control` + `treatment` floats)
-- `secondary_metrics` (optional list): additional `conversion_rate` or `arpu` metrics evaluated with the same inference method for full-experiment readouts (informational only; never block recommendations)
+- `secondary_metrics` (optional list): additional `conversion_rate`, `arpu`, or `ratio` metrics evaluated with the same inference method for full-experiment readouts (informational only; never block recommendations)
 - `decision_policy` (optional, Bayesian mode):
   - `enabled` (bool)
   - `bayes_prob_beats_control` (default `0.95`)
@@ -212,7 +215,7 @@ Variant row:
 
 Each variant row also accepts an optional `expected_share` (positive number) for unequal traffic splits. If used, it must be set on every variant (and not combined with top-level `expected_split`); weights are normalized to sum to `1.0`. On the CLI, `--expected-split` overrides any split from the input file or `pyproject.toml`, accepting either comma-separated weights in variant order (`--expected-split 0.9,0.1` or `--expected-split 90,10`) or `name=weight` pairs (`--expected-split control=0.8,v1=0.2`).
 
-For `primary_metric: "arpu"`, each variant also needs `revenue_sum` and `revenue_sum_squares`.
+For `primary_metric: "arpu"`, each variant also needs `revenue_sum` and `revenue_sum_squares`. For `primary_metric: "ratio"`, each variant needs `numerator_sum`, `numerator_sum_squares`, `denominator_sum`, `denominator_sum_squares`, and `numerator_denominator_sum`.
 
 Guardrails (`ablift example-input` prints a full multi-metric example):
 
@@ -237,7 +240,7 @@ Guardrails (`ablift example-input` prints a full multi-metric example):
 {"name": "p95_latency_ms", "control": 420.0, "treatment": 430.0, "direction": "decrease", "max_relative_change": 0.05}
 ```
 
-Secondary metric entry (`metric` is `"conversion_rate"` or `"arpu"`; `visitors` and `is_control` default to the matching primary variant):
+Secondary metric entry (`metric` is `"conversion_rate"`, `"arpu"`, or `"ratio"`; `visitors` and `is_control` default to the matching primary variant):
 
 ```json
 {
