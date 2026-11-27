@@ -87,4 +87,13 @@ jobs:
             found && /^## \[/ {exit}
             found {print}
           ' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md
+          flags=()
+          # PEP 440 pre-releases (e.g. 0.5.1a1, 0.6.0rc2, 0.6.0.dev1) are marked as such on GitHub.
+          if [[ "$version" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
+            flags+=(--prerelease)
+            if ! grep -q '[^[:space:]]' notes.md; then
+              echo "Pre-release $version. Install with \`pip install --pre ablift\`. See CHANGELOG.md." > notes.md
+            fi
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md "${flags[@]}"
