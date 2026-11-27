@@ -14,3 +14,6 @@ examples/out/
 /input.json
 /output.json
 /report.md
+.coverage
+.coverage.*
+htmlcov/
